@@ -92,6 +92,10 @@ struct DesktopView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         Divider()
+                        if monitor.automaticallyReusesFitbitWalks {
+                            Text("Automatically reuse one matching Fitbit Air workout. Other overlaps stay available for review.")
+                                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                         Toggle("Connect to the pad automatically", isOn: Binding(get: { monitor.state.monitoring }, set: monitor.setMonitoring))
                         Toggle("Open PadSteps at login", isOn: Binding(get: { launchAtLogin }, set: { enabled in
                                 do {

@@ -25,6 +25,10 @@ targets:
       - path: apps/macOS
     dependencies:
       - package: PadStepsCore
+    info:
+      path: .local/Mac-Info.plist
+      properties:
+        PadStepsAutoCorrectMatchingWalks: ${PADSTEPS_AUTO_CORRECT_MATCHING_WALKS}
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ${PADSTEPS_MAC_BUNDLE_ID}
@@ -49,6 +53,7 @@ targets:
       path: .local/Phone-Info.plist
       properties:
         GIDClientID: ${PADSTEPS_IOS_CLIENT_ID}
+        PadStepsStepExportMode: ${PADSTEPS_STEP_EXPORT_MODE}
         PadStepsRecorderClientID: ${PADSTEPS_RECORDER_CLIENT_ID}
         PadStepsCorrectionPublicKey: ${PADSTEPS_CORRECTION_PUBLIC_KEY}
         CFBundleURLTypes:

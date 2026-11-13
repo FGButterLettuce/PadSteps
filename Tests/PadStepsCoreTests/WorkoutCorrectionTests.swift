@@ -48,6 +48,19 @@ final class WorkoutCorrectionTests: XCTestCase {
         exercise["exerciseType"] = "RUNNING"; object["exercise"] = exercise
         XCTAssertFalse(try XCTUnwrap(WorkoutConflict(point: object)).coversSameWalk(walk))
     }
+    func testOnlyOneMatchingKnownFitbitWalkCanBeAutomaticallyCorrected() throws {
+        var walk = fixture(); walk.status = "review"; walk.reviewKind = "overlap"
+        var object = point(walk, note: "")
+        object["dataSource"] = ["platform": "FITBIT", "recordingMethod": "DERIVED", "device": ["displayName": "Fitbit Air"]]
+        XCTAssertNotNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
+        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: false))
+        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object, object], for: walk, enabled: true))
+        walk.uploadAttempted = true
+        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
+        walk.uploadAttempted = nil
+        object["dataSource"] = ["platform": "FITBIT", "recordingMethod": "MANUAL", "device": ["displayName": "Fitbit Air"]]
+        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
+    }
     func testLateOverlapRetainsItsExistingResourceAndCannotBecomeANewUpload() {
         var walk = fixture(); walk.status = "review"; walk.reviewKind = "lateOverlap"
         walk.resourceName = resource; walk.uploadAttempted = true

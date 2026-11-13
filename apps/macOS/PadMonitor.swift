@@ -37,6 +37,10 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     private var persistenceHealthy = true
     private var lockFD: Int32 = -1
     private var storageOpen = false
+    var automaticallyReusesFitbitWalks: Bool {
+        let value = String(describing: Bundle.main.object(forInfoDictionaryKey: "PadStepsAutoCorrectMatchingWalks") ?? false).lowercased()
+        return ["true", "yes", "1"].contains(value)
+    }
 
     override init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "org.padsteps.desktop", isDirectory: true)
@@ -206,7 +210,14 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     func syncPending() async {
         guard !syncing, persistenceHealthy, google.connected else { return }
         syncing = true; lastSync = Date()
-        defer { syncing = false; syncingWalkID = nil }
+        var automaticCorrections: [(UUID, WorkoutConflict)] = []
+        defer {
+            syncing = false; syncingWalkID = nil
+            let candidates = automaticCorrections
+            if !candidates.isEmpty {
+                Task { for (id, conflict) in candidates { await self.correctExistingWorkout(walkID: id, conflict: conflict) } }
+            }
+        }
         for pending in state.walks.filter(\.needsSync) {
             syncingWalkID = pending.id
             var walk = pending
@@ -270,6 +281,10 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                         if reason == UploadGuard.overlapMessage {
                             walk.reviewKind = "overlap"
                             await loadComparison(walk: walk, points: existing)
+                            if let candidate = WorkoutConflict.automaticCandidate(in: existing, for: walk,
+                                enabled: automaticallyReusesFitbitWalks) {
+                                automaticCorrections.append((walk.id, candidate))
+                            }
                         }
                         try update(walk); continue
                     case .resolveOperation(let operation):

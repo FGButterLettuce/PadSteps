@@ -34,6 +34,11 @@ final class GoogleWalkReader {
     }
 
     func get(_ path: String, query: [URLQueryItem] = []) async throws -> [String: Any] {
+        try await read(path, query: query, body: nil)
+    }
+
+    /// POST is used only for the API's read-only rollup operation; no Google write scope is requested.
+    private func read(_ path: String, query: [URLQueryItem] = [], body: [String: Any]?) async throws -> [String: Any] {
         try Task.checkCancellation()
         try await restore()
         guard let current = GIDSignIn.sharedInstance.currentUser,
@@ -44,7 +49,11 @@ final class GoogleWalkReader {
         var components = URLComponents(string: "https://health.googleapis.com/v4/\(path)")!
         components.queryItems = query.isEmpty ? nil : query
         var request = URLRequest(url: components.url!, timeoutInterval: 20)
-        request.httpMethod = "GET"
+        request.httpMethod = body == nil ? "GET" : "POST"
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         request.setValue("Bearer \(user.accessToken.tokenString)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
@@ -55,6 +64,50 @@ final class GoogleWalkReader {
             throw ProofError.message("Google Health returned an unreadable response.")
         }
         return object
+    }
+
+    func recordedSteps(for walk: PadStepImport) async throws -> (count: Int, noRecords: Bool) {
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try await checkForStepFeedback(walk, formatter: formatter)
+        let response = try await read("users/me/dataTypes/steps/dataPoints:rollUp", body: [
+            "range": ["startTime": formatter.string(from: walk.start), "endTime": formatter.string(from: walk.end)],
+            "windowSize": "86400s", "pageSize": 10,
+            // Match Bevel's Google feed, including phone/other sources. The feedback check excludes our own exports.
+            "dataSourceFamily": "users/me/dataSourceFamilies/all-sources"])
+        guard (response["nextPageToken"] as? String ?? "").isEmpty else {
+            throw ProofError.message("Google returned an unfinished step rollup. No top-up was changed.")
+        }
+        if response.isEmpty || (response["rollupDataPoints"] as? [[String: Any]])?.isEmpty == true {
+            // A successful, empty query means no Google steps are recorded yet. Recheck on later syncs.
+            return (0, true)
+        }
+        guard let count = StepComparison.rollupCount(response) else {
+            throw ProofError.message("Google returned an unreadable step total. No top-up was changed.")
+        }
+        return (count, false)
+    }
+
+    private func checkForStepFeedback(_ walk: PadStepImport, formatter: ISO8601DateFormatter) async throws {
+        guard let ownBundle = Bundle.main.bundleIdentifier else { throw ProofError.message("App identity is unavailable.") }
+        var page: String?; var seen = Set<String>()
+        repeat {
+            var query = [URLQueryItem(name: "pageSize", value: "10000"),
+                URLQueryItem(name: "dataSourceFamily", value: "users/me/dataSourceFamilies/all-sources"),
+                URLQueryItem(name: "filter", value: "steps.interval.start_time >= \"\(formatter.string(from: walk.start.addingTimeInterval(-60)))\" AND steps.interval.start_time < \"\(formatter.string(from: walk.end))\"")]
+            if let page { query.append(.init(name: "pageToken", value: page)) }
+            let response = try await get("users/me/dataTypes/steps/dataPoints", query: query)
+            for point in response["dataPoints"] as? [[String: Any]] ?? [] {
+                let source = point["dataSource"] as? [String: Any]
+                let application = source?["application"] as? [String: Any]
+                if application?["packageName"] as? String == ownBundle {
+                    throw ProofError.message("Google is reading PadSteps back from Apple Health. Disable Google's Steps read access to Apple Health before syncing top-ups, so those steps are not subtracted twice.")
+                }
+            }
+            page = response["nextPageToken"] as? String
+            if let token = page, !token.isEmpty {
+                guard seen.insert(token).inserted, seen.count <= 100 else { throw ProofError.message("Google's step-source check did not finish.") }
+            } else { page = nil }
+        } while page != nil
     }
 
     func userID() async throws -> String {

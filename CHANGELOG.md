@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add optional missing-step exports for direct Google Health + PadSteps in Bevel,
+  with versioned revisions, pending-write recovery and step-feedback detection.
+- Keep full-count mode as the default for existing public configurations.
+
 - Expose read-only source comparisons on saved walks and document Bevel direct
   Google versus Apple Health step duplication.
 

@@ -126,3 +126,5 @@ trademarks. Code and project-created artwork are offered under [MIT](LICENSE);
 third-party dependencies retain their own licenses.
 
 Blocked by an existing exercise? See [overlap review and step comparisons](docs/OVERLAPPING-WORKOUTS.md).
+
+For Bevel with a direct Google Health connection, optional [`missing-google` mode](docs/OVERLAPPING-WORKOUTS.md#two-automatic-bevel-feeds-google-plus-missing-pad-steps) exports only the pad steps missing from Google, revising the same record after later syncs.

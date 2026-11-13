@@ -44,6 +44,16 @@ public struct WorkoutConflict: Codable, Identifiable, Equatable, Sendable {
         let value = Int(String(describing: summary["steps"] ?? ""))
         steps = value.flatMap { $0 >= 0 && $0 <= 100_000 ? $0 : nil }
     }
+    /// Automatic reconciliation is deliberately narrower than an explicit reviewed correction.
+    public static func automaticCandidate(in points: [[String: Any]], for walk: AutomaticWalk, enabled: Bool) -> WorkoutConflict? {
+        guard enabled, walk.canRecheckOverlap, points.count == 1, let point = points.first,
+              let source = point["dataSource"] as? [String: Any], source["platform"] as? String == "FITBIT",
+              let device = source["device"] as? [String: Any], device["displayName"] as? String == "Fitbit Air",
+              let method = source["recordingMethod"] as? String,
+              ["ACTIVELY_MEASURED", "PASSIVELY_MEASURED", "DERIVED"].contains(method),
+              let conflict = WorkoutConflict(point: point), conflict.coversSameWalk(walk) else { return nil }
+        return conflict
+    }
     public func coversSameWalk(_ walk: AutomaticWalk) -> Bool {
         // Do not overwrite a partial, longer, or unrelated session with a whole-pad total.
         type == "WALKING" && abs(start.timeIntervalSince(walk.start)) <= 60 && abs(end.timeIntervalSince(walk.exportEnd)) <= 60

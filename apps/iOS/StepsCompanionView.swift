@@ -52,7 +52,7 @@ struct StepsCompanionView: View {
                     Button("Sync now") { Task { await sync.sync() } }
                         .frame(minHeight: 44).disabled(sync.busy || sync.connecting || sync.email == nil || !sync.authorized)
                 } header: { Text("Step sync") }
-                footer: { Text("The Mac saves your workout and heart rate to Google Health. This iPhone saves only the walk's measured steps to Apple Health.") }
+                footer: { Text(sync.exportsMissingSteps ? "The Mac saves the full workout and heart rate to Google Health. This iPhone exports only the pad steps missing from Google's count." : "The Mac saves your workout and heart rate to Google Health. This iPhone saves only the walk's measured steps to Apple Health.") }
 
                 Section {
                     if let email = sync.email {
@@ -74,15 +74,21 @@ struct StepsCompanionView: View {
 
                 Section {
                     LabeledContent("Apple Health daily steps", value: sync.dailySteps?.formatted() ?? "Not checked")
-                    Text("Keep PadSteps above Google Health in Apple Health → Steps → Data Sources & Access. This lets Apple Health prioritize the pad during overlapping intervals.")
-                    Text("In Bevel, select Apple Health for Steps. Keep your existing workout and heart-rate connection.")
+                    if sync.exportsMissingSteps {
+                        LabeledContent("Step export", value: "Missing Google steps only")
+                        Text("In Bevel Steps, keep Google Health and PadSteps enabled. Hide the duplicate Google Health source labeled with your iPhone. Workouts and heart rate stay with Google Health.")
+                        Text("These are top-ups for Bevel. Apple Health's merged daily counter can be lower than Bevel's combined total.")
+                    } else {
+                        Text("Keep PadSteps above Google Health in Apple Health → Steps → Data Sources & Access.")
+                        Text("In Bevel, use the Apple Health route for Steps and verify its source selection separately.")
+                    }
                 } header: { Text("Avoid overlapping step sources") }
-                footer: { Text("Each walk has one stable step record. Apple Health merges overlapping sources; Bevel's step-source selection must be checked separately.") }
+                footer: { Text("Each walk keeps one sync identity. When Google's count changes, the same top-up is revised instead of adding another copy.") }
 
                 Section {
                     Text(sync.backgroundStatus)
                     Text("iOS chooses background timing. Leave Background App Refresh enabled and avoid force-quitting PadSteps. Opening it always checks for finished walks.")
-                    if sync.workoutsReadable == 0, sync.authorized {
+                    if !sync.exportsMissingSteps, sync.workoutsReadable == 0, sync.authorized {
                         Text("No Apple Health workouts are readable yet. A Google workout wake is not confirmed; scheduled and app-open checks are available.")
                     }
                 } header: { Text("Background checks") }
@@ -91,10 +97,10 @@ struct StepsCompanionView: View {
                     Section("Walks") {
                         ForEach(sync.entries) { entry in
                             VStack(alignment: .leading, spacing: 6) {
-                                Text("\(entry.walk.steps.formatted()) steps").font(.headline)
+                                Text("\((entry.exported?.steps ?? entry.walk.steps).formatted()) steps\(sync.exportsMissingSteps ? " exported" : "")").font(.headline)
                                 Text(entry.walk.start, format: .dateTime.month().day().hour().minute()).font(.subheadline)
-                                Label(entry.state == "confirmed" ? "Verified once in Apple Health" : "Needs review",
-                                      systemImage: entry.state == "confirmed" ? "checkmark.circle" : "exclamationmark.triangle")
+                                Label(entry.state == "covered" ? "Already covered by Google" : entry.state == "confirmed" ? "Verified once in Apple Health" : "Needs review",
+                                      systemImage: (entry.state == "confirmed" || entry.state == "covered") ? "checkmark.circle" : "exclamationmark.triangle")
                                 Text(entry.note).font(.footnote).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)
                         }

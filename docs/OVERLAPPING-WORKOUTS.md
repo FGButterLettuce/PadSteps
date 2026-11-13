@@ -42,7 +42,7 @@ and matching counters. Unedited native workouts and arbitrary notes are not
 eligible step imports. The existing Google account binding and per-resource
 HealthKit sync identity still apply. The phone has no Google write access.
 
-The phone saves one **full measured pad count**, rather than a separate difference
+In the default `full` export mode, the phone saves one **full measured pad count**, rather than a separate difference
 sample. Apple Health chooses overlapping sources using its source priorities;
 a second delta source is not a reliable way to add counts there. Put PadSteps
 above competing sources under Health → Steps → Data Sources & Access. Readback
@@ -52,30 +52,51 @@ new steps can appear downstream.
 
 Editing an exercise summary does not establish daily Google step credit.
 
-## Bevel can combine direct and Apple Health steps
+## Two automatic Bevel feeds: Google plus missing pad steps
 
-Apple Health's merged total and Bevel's direct Google integration are separate
-aggregation paths. A single PadSteps sample is not proof that Bevel has resolved
-cross-source overlap. Bevel can add direct Google/Fitbit steps to full pad counts
-from Apple Health even while Apple Health's own displayed daily total correctly
-resolves their overlap.
+For a Bevel setup using **direct Google Health Steps** and **PadSteps**, set
+`"step_export_mode": "missing-google"` in `.local/settings.json`, regenerate the
+project, and rebuild/install the phone app. The default `full` mode remains
+available for users who want full measured samples prioritized in Apple Health.
 
-In Bevel, inspect Profile → Data Sources → Steps → Hide Data Sources. Use one
-route for the same Fitbit measurements. When Google/Fitbit readings also arrive
-through Apple Health, hiding the **direct Google Health steps source** while
-retaining the Apple Health sources is a route to test. Keep Google sources for
-Workouts and Heart Rate separately. Confirm the resulting step total against
-Apple Health and ensure that outside-pad steps remain. Do not delete Fitbit's
-raw readings or reduce the accurate pad measurements just to offset a downstream
-source configuration. Deleting a Google exercise does not demonstrate that its
-underlying tracker steps disappeared.
+The phone reads Google's steps rollup for the **exact pad interval**, then exports
+`max(0, measured pad steps − Google steps)`. For example, a measured 2,000-step
+walk with 500 Google steps produces one 1,500-step PadSteps top-up. Google keeps
+the full workout and HR; its workout summary is not used as a substitute for the
+step-data query. Use the same all-sources Google feed as the direct integration,
+not the narrower wearable-only family. The phone checks for its own app appearing
+in Google's step sources and stops rather than feeding its exported steps back
+into the subtraction.
 
-Saved Mac walks now have **Compare step sources**. This read-only check displays
-Google's all-sources and tracker-only counts for the selected pad interval and
-its local date. It does not change any workout or step data. Reading the Google
-daily count separately from exercise summaries helps diagnose this case.
+In Bevel → Profile → Data Sources → Steps → Hide Data Sources:
 
-[Bevel documents per-category source visibility](https://help.bevel.health/en/articles/10416897).
+- Keep **Google Health without an iPhone/device label** enabled (direct feed).
+- Keep **PadSteps** enabled (the top-ups exported through Apple Health).
+- Hide the duplicate **Google Health labeled with your iPhone** (Apple Health copy).
+- The **Health** source represents manual entries; it is not the merged Apple
+  Health daily counter. Enable it only when those manual entries are intentional.
+- Workouts and Heart Rate source settings are independent of these Steps choices.
+
+Apple Health's own daily counter can be lower in this mode: it prioritizes
+sources over overlapping intervals instead of summing the Fitbit count and the
+PadSteps top-up. The mode targets Bevel's **direct Google + PadSteps** combination.
+Do not claim its Apple Health counter is a fully measured daily total.
+
+Late Google step sync revises the **same** HealthKit sync identifier at a higher
+version. Repeat checks adopt an unchanged export. When Google already covers a
+walk, no top-up is created; an existing redundant top-up is removed only after
+matching this app's known record. Conflicting, duplicated or user-deleted records
+remain protected. A successful empty Google query means no steps are recorded
+there yet; a provisional full-pad top-up is rechecked later. Failed or malformed
+queries never become guessed zero counts. Pending write journals preserve the
+absolute intended quantity across interrupted updates.
+
+Physical controlled replacements and app-open reconciliation have been checked.
+Background delivery still depends on iOS, and the next newly recorded real walk
+is the remaining full-lifecycle integration check. Opening the phone app forces
+catch-up. Bevel may cache changes; [its troubleshooting guide](https://help.bevel.health/en/articles/11257729)
+describes refreshing and reloading data. [Its source controls](https://help.bevel.health/en/articles/10416897)
+apply separately to each data category.
 
 ## Late Fitbit detection
 
@@ -85,6 +106,19 @@ another Google workout or another Apple Health sample. Keep the measured PadStep
 workout, resolve the extra exercise in Google Health, then Check again. Removing
 an already-exported PadSteps exercise is not permission to recreate its steps
 under a new Google resource ID.
+
+## Optional automatic reuse of a matching Fitbit exercise
+
+Set `"auto_correct_matching_workouts": true` in the local settings to let the Mac
+reuse a single matching Fitbit Air WALKING exercise automatically. Default is
+false for existing public configurations. Both start/end must match within 60
+seconds, its source and recording method must be known, and the pad upload must
+not already have an uncertain result. Manual entries, other devices, partial or
+multiple overlaps stay in review. The same snapshot/revalidation, signed receipt,
+persisted PATCH target and readback rules apply. A native-source update may be
+rejected by Google, in which case the app keeps the walk for review; this branch
+still needs the next genuine Fitbit overlap to validate end to end. It never
+creates a second exercise to work around a rejected PATCH.
 
 ## Local pairing and publication
 
@@ -112,3 +146,9 @@ type is not proof that every source permits every update.
 Official API references: [exercise updates](https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints/patch),
 [interval rollups](https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints/rollUp),
 and [source metadata](https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints#datasource).
+
+Step-change observers exclude PadSteps itself to avoid feedback from its own writes.
+The phone registers step and (when permitted) workout background delivery. Apple
+limits step delivery frequency to hourly; iOS may schedule it later. App-open
+checks and scheduled refresh remain catch-up routes. Background registration is
+not proof of an end-to-end wake for a newly recorded walk.

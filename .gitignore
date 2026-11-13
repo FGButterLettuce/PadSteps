@@ -36,3 +36,6 @@ xcuserdata/
 __pycache__/
 .venv/
 .DS_Store
+
+# Local physical-test configurations and results
+step-count-trial*.json

@@ -48,7 +48,10 @@ Each imported walk uses:
 padsteps.google_<health-user-id>_<exercise-data-point-id>.steps
 ```
 
-The HealthKit sync version remains 1. A matching existing quantity sample is
+Full-count exports use sync version 1. In optional `missing-google` mode, the
+version increases when Google sync changes the missing-step quantity; every
+revision retains the same per-walk sync identifier. The ledger and any pending
+write are persisted before HealthKit changes. A matching existing quantity sample is
 adopted. Conflicts or a previously confirmed record that is no longer readable
 are held for review, not automatically restored. The journal is persisted before
 the HealthKit save; retries preserve the same identity. The write type is only
@@ -73,3 +76,9 @@ health exports, device identifiers, signing files and generated projects.
 
 The public repository was prepared from a file allowlist, rather than pushing
 the original experiment directory and hoping `.gitignore` was sufficient.
+
+Step-change observers exclude PadSteps itself to avoid feedback from its own writes.
+The phone registers step and (when permitted) workout background delivery. Apple
+limits step delivery frequency to hourly; iOS may schedule it later. App-open
+checks and scheduled refresh remain catch-up routes. Background registration is
+not proof of an end-to-end wake for a newly recorded walk.

@@ -73,6 +73,12 @@ def main():
         public_key = key_data['publicKey']
         shutil.copyfile(key_file, signing_resource)
         os.chmod(signing_resource, 0o600)
+    auto_correct = settings.get('auto_correct_matching_workouts', False)
+    if not isinstance(auto_correct, bool):
+        raise SystemExit('auto_correct_matching_workouts must be true or false.')
+    export_mode = settings.get('step_export_mode', 'full')
+    if export_mode not in ('full', 'missing-google'):
+        raise SystemExit('step_export_mode must be full or missing-google.')
     client = settings['google_ios_client_id']
     env = os.environ.copy()
     env.update({
@@ -83,6 +89,8 @@ def main():
         'PADSTEPS_IOS_CALLBACK_SCHEME': '.'.join(reversed(client.split('.'))),
         'PADSTEPS_RECORDER_CLIENT_ID': oauth['installed']['client_id'],
         'PADSTEPS_CORRECTION_PUBLIC_KEY': public_key,
+        'PADSTEPS_STEP_EXPORT_MODE': export_mode,
+        'PADSTEPS_AUTO_CORRECT_MATCHING_WALKS': 'YES' if auto_correct else 'NO',
     })
     subprocess.run(['xcodegen', 'generate', '--spec', 'project.yml'], cwd=ROOT, env=env, check=True)
     print('Local project generated. Personal settings and OAuth resources are ignored by Git.')
