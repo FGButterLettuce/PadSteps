@@ -52,6 +52,27 @@ def main():
     resource = ROOT / 'apps/macOS/Resources/oauth-client.json'
     resource.write_text(json.dumps(oauth, indent=2) + '\n')
     os.chmod(resource, 0o600)
+    # A local key pair lets the phone verify pad measurements attached to an existing
+    # Google/Fitbit workout without pretending that workout originated in PadSteps.
+    public_key = ''
+    signing_resource = ROOT / 'apps/macOS/Resources/correction-key.json'
+    if args.ci:
+        signing_resource.unlink(missing_ok=True)
+    if not args.ci:
+        key_file = local / 'correction-key.json'
+        if not key_file.exists():
+            generated = subprocess.run(['swift', '-e', '\n'.join([
+                'import Foundation', 'import CryptoKit',
+                'let key = Curve25519.Signing.PrivateKey()',
+                'let data = try JSONSerialization.data(withJSONObject: ["privateKey": key.rawRepresentation.base64EncodedString(), "publicKey": key.publicKey.rawRepresentation.base64EncodedString()])',
+                'FileHandle.standardOutput.write(data)',
+            ])], capture_output=True, check=True)
+            key_file.write_bytes(generated.stdout)
+        os.chmod(key_file, 0o600)
+        key_data = json.loads(key_file.read_text())
+        public_key = key_data['publicKey']
+        shutil.copyfile(key_file, signing_resource)
+        os.chmod(signing_resource, 0o600)
     client = settings['google_ios_client_id']
     env = os.environ.copy()
     env.update({
@@ -61,6 +82,7 @@ def main():
         'PADSTEPS_IOS_CLIENT_ID': client,
         'PADSTEPS_IOS_CALLBACK_SCHEME': '.'.join(reversed(client.split('.'))),
         'PADSTEPS_RECORDER_CLIENT_ID': oauth['installed']['client_id'],
+        'PADSTEPS_CORRECTION_PUBLIC_KEY': public_key,
     })
     subprocess.run(['xcodegen', 'generate', '--spec', 'project.yml'], cwd=ROOT, env=env, check=True)
     print('Local project generated. Personal settings and OAuth resources are ignored by Git.')

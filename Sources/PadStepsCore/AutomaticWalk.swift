@@ -26,6 +26,9 @@ public struct AutomaticWalk: Codable, Identifiable, Sendable {
     public var status = "recording"
     public var resourceName: String?
     public var operationName: String?
+    public var uploadAttempted: Bool?
+    public var reviewKind: String?
+    public var correctionTarget: String?
     public var averageBPM: Int?
     public var detail = ""
     public var steps: Int { max(0, last.steps + stepWraps * 65536 - baselineSteps) }
@@ -34,7 +37,15 @@ public struct AutomaticWalk: Codable, Identifiable, Sendable {
     // The pad clock determines workout duration; the observed stop anchors its interval.
     public var start: Date { (stop ?? last.at).addingTimeInterval(-Double(seconds)) }
     public var exportEnd: Date { stop ?? last.at }
-    public var needsSync: Bool { ["waitingHeartRate", "ready", "attempted", "verifying"].contains(status) }
+    /// Only a pre-upload overlap is retryable. Counter resets and uncertain writes stay protected.
+    public var canRecheckOverlap: Bool {
+        status == "review" && issue == nil && uploadAttempted != true && resourceName == nil && operationName == nil && correctionTarget == nil &&
+        (reviewKind == "overlap" || (reviewKind == nil && detail == UploadGuard.overlapMessage))
+    }
+    public var canRecheckSavedOverlap: Bool { status == "review" && reviewKind == "lateOverlap" && resourceName != nil && issue == nil }
+    public var canReviewCorrection: Bool { status == "verifying" && correctionTarget != nil && issue == nil }
+    public var hasOverlapReview: Bool { canRecheckOverlap || canRecheckSavedOverlap }
+    public var needsSync: Bool { ["waitingHeartRate", "ready", "attempted", "verifying"].contains(status) || hasOverlapReview }
 }
 
 /// One pad, any number of walks. A disconnect is never treated as a stop.

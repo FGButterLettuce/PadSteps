@@ -124,3 +124,5 @@ Independent community software. Not affiliated with Sperax, Fitbit, Google,
 Apple or Bevel. Those names identify compatibility and remain their owners'
 trademarks. Code and project-created artwork are offered under [MIT](LICENSE);
 third-party dependencies retain their own licenses.
+
+Blocked by an existing exercise? See [overlap review and step comparisons](docs/OVERLAPPING-WORKOUTS.md).

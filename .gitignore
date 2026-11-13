@@ -5,6 +5,7 @@
 .env.*
 !.env.example
 apps/macOS/Resources/oauth-client.json
+apps/macOS/Resources/correction-key.json
 *.p8
 *.p12
 *.mobileprovision

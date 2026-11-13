@@ -132,6 +132,12 @@ struct DesktopView: View {
                                 .monospacedDigit()
                             Text(walk.issue ?? walk.detail).font(.callout).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                            if walk.hasOverlapReview || walk.canReviewCorrection {
+                                OverlapReviewView(monitor: monitor, walk: walk)
+                            } else if walk.status == "verifying" || walk.status == "attempted" {
+                                Button("Check save confirmation") { monitor.retrySync() }
+                                    .disabled(!google.connected || monitor.syncing)
+                            }
                         }.padding(.vertical, 8)
                         Divider()
                     }
@@ -160,4 +166,73 @@ struct DesktopView: View {
 
 private func duration(_ seconds: Int) -> String {
     String(format: "%d:%02d", seconds / 60, seconds % 60)
+}
+
+
+/// Inline review keeps the measurements and their recovery actions together.
+private struct OverlapReviewView: View {
+    @ObservedObject var monitor: PadMonitor
+    let walk: AutomaticWalk
+    @State private var expanded = true
+    @State private var correction: WorkoutConflict?
+    private var disabled: Bool { monitor.syncing || !monitor.google.connected }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button("Check again") { monitor.recheck(walk.id) }.disabled(disabled)
+                Button("Compare steps") { Task { await monitor.inspectOverlap(walk.id) } }.disabled(disabled)
+                if monitor.syncingWalkID == walk.id { ProgressView().controlSize(.small); Text("Checking Google…").foregroundStyle(.secondary) }
+            }
+            Text(walk.canReviewCorrection ? "Google has not confirmed the update. Check again reads the same workout; Compare steps lets you review it before retrying the update. Neither action creates another workout." : walk.resourceName == nil ? "Deleted the overlapping workout? Check again will verify it is gone, then save this walk." : "Keep the measured PadSteps workout in Google Health. After removing the extra workout there, choose Check again to verify.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let report = monitor.overlapReports[walk.id] {
+                DisclosureGroup("Step comparison", isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Pad interval: \(walk.start.formatted(date: .abbreviated, time: .standard)) – \(walk.exportEnd.formatted(date: .omitted, time: .standard))")
+                            .font(.callout).textSelection(.enabled)
+                        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 7) {
+                            GridRow { Text("Measured by pad"); Text(walk.steps.formatted()).monospacedDigit() }
+                            GridRow { Text("Google steps in this interval"); Text(report.comparison.recorded.map { $0.formatted() } ?? "Unknown").monospacedDigit() }
+                            GridRow { Text("Missing from Google's count"); Text(report.comparison.missing.map { $0.formatted() } ?? "Unknown").monospacedDigit() }
+                        }
+                        if let excess = report.comparison.excess, excess > 0 {
+                            Text("Google reports \(excess.formatted()) more steps than the pad in this interval.")
+                        }
+                        if let error = report.intervalError { Text(error).foregroundStyle(.secondary) }
+                        if report.workouts.isEmpty {
+                            Text(walk.canReviewCorrection ? "The update target is not visible. The original pad walk is preserved; no replacement workout will be created automatically." : walk.resourceName == nil ? "No overlapping workout remains. Choose Check again to save the measured walk." : "No extra overlapping workout remains. Choose Check again to verify the saved PadSteps workout.")
+                        }
+                        ForEach(report.workouts) { conflict in
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text("\(conflict.source) · \(conflict.type.replacingOccurrences(of: "_", with: " ").capitalized)").font(.headline)
+                                Text("\(conflict.start.formatted(date: .omitted, time: .standard)) – \(conflict.end.formatted(date: .omitted, time: .standard)) · \(conflict.steps.map { "\($0.formatted()) workout steps" } ?? "Workout steps unknown")")
+                                    .monospacedDigit().textSelection(.enabled)
+                                if (walk.resourceName == nil || walk.correctionTarget == conflict.id), report.workouts.count == 1, conflict.coversSameWalk(walk), walk.averageBPM != nil {
+                                    Button(walk.canReviewCorrection ? "Retry using pad totals…" : "Use pad totals for this workout…") { correction = conflict }.disabled(disabled)
+                                } else {
+                                    Text("This is a partial, different, or multiple-workout overlap. Resolve it in Google Health, then Check again; whole-walk pad totals cannot be applied safely here.")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        Text("Correcting a workout sets its total to the pad count; it does not create another workout or add daily Google steps. The iPhone sync keeps one measured pad step record in Apple Health. Keep PadSteps above other step sources there.")
+                            .foregroundStyle(.secondary)
+                        Text("Checked \(report.checkedAt.formatted(date: .omitted, time: .standard))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.font(.callout).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+                }
+            }
+        }
+        .alert("Correct this existing workout?", isPresented: Binding(get: { correction != nil }, set: { if !$0 { correction = nil } })) {
+            if let conflict = correction {
+                Button("Use \(walk.steps.formatted()) pad steps") {
+                    Task { await monitor.correctExistingWorkout(walkID: walk.id, conflict: conflict) }
+                    correction = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { correction = nil }
+        } message: {
+            Text("Replace this workout’s steps, distance, times, duration and average heart rate with the pad walk and synced Fitbit heart rate. Existing splits and pause events will be removed because their times may differ. One Google workout remains. Daily Google steps are separate; Apple Health steps sync through the paired iPhone app.")
+        }
+    }
 }

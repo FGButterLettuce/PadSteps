@@ -9,8 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {'Sources', 'Tests', 'apps', 'config', 'scripts', 'docs', 'assets', '.github'}
 ROOT_FILES = {'Package.swift', 'Package.resolved', 'Makefile', 'project.yml', 'README.md',
               'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', '.gitignore', '.gitleaks.toml'}
-PRIVATE_NAMES = re.compile(r'(^|/)(\.local|\.secrets|proof-runs|captures|Walks|xcuserdata)(/|$)|(?:oauth-client|token|state|step-sync-journal|step-sync-status|health-diagnostic|health-proof).*\.json$|\.(p8|p12|mobileprovision|keychain|log)$', re.I)
+PRIVATE_NAMES = re.compile(r'(^|/)(\.local|\.secrets|proof-runs|captures|Walks|xcuserdata)(/|$)|(?:correction-key|oauth-client|token|state|step-sync-journal|step-sync-status|health-diagnostic|health-proof).*\.json$|\.(p8|p12|mobileprovision|keychain|log)$', re.I)
 SENSITIVE = {
+    'paired correction private key': re.compile(r'"privateKey"\s*:\s*"[A-Za-z0-9+/]{40,}={0,2}"'),
     'private key': re.compile(r'-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----'),
     'OAuth refresh token': re.compile(r'1//[A-Za-z0-9_-]{25,}'),
     'Google access token': re.compile(r'ya29\.[A-Za-z0-9._-]{20,}'),

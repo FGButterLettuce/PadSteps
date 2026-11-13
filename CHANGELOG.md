@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Recheck pre-upload overlap reviews after an exercise is removed.
+- Compare pad steps with reconciled Google interval steps and workout summaries.
+- Review an in-place correction instead of creating a second workout; pair the
+  phone to verify measured steps on corrected native exercises.
+- Audit recent saved walks for later auto-detected exercises.
+- Keep uncertain attempts protected and preserve per-resource HealthKit identity.
+- Verify one recovered walk through Google and the phone: one HealthKit sample,
+  repeat-sync adoption, and an observed daily increase equal to the missing steps.
+
+See [overlapping workouts](docs/OVERLAPPING-WORKOUTS.md) for limits and validation.
+
+
 ## 0.3.0 — public source preview
 
 - Publish a clean, configurable Mac recorder and iPhone steps companion.

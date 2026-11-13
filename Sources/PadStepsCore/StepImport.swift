@@ -1,6 +1,6 @@
 import Foundation
 
-/// A Google exercise written by our Mac recorder, never a native Fitbit walk.
+/// A recorder exercise, or a native exercise carrying a verified paired-recorder correction.
 public struct PadStepImport: Codable, Equatable, Sendable {
     public let resource: String
     public let userID: String
@@ -10,12 +10,22 @@ public struct PadStepImport: Codable, Equatable, Sendable {
     public var id: String { "google_\(userID)_\(resource.split(separator: "/").last!)" }
     public var syncIdentifier: String { "padsteps.\(id).steps" }
 
-    public static func parse(_ data: Data, recorderClientID: String) throws -> PadStepImport? {
-        guard !recorderClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    public static func parse(_ data: Data, recorderClientID: String, correctionPublicKey: Data? = nil) throws -> PadStepImport? {
+        guard !recorderClientID.isEmpty else { return nil }
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let source = raw?["dataSource"] as? [String: Any]
         let app = source?["application"] as? [String: Any]
         let exercise = raw?["exercise"] as? [String: Any]
+        if let publicKey = correctionPublicKey, let name = raw?["name"] as? String,
+           let notes = exercise?["notes"] as? String,
+           let proof = WorkoutCorrection.verified(note: notes, publicKey: publicKey, recorderClientID: recorderClientID, resource: name),
+           let raw, proof.matches(raw) {
+            let parts = name.split(separator: "/").map(String.init)
+            guard parts.count == 6, parts[0] == "users", parts[2] == "dataTypes", parts[3] == "exercise",
+                  parts[4] == "dataPoints", !parts[1].isEmpty, parts[1].allSatisfy(\.isNumber),
+                  !parts[5].isEmpty, parts[5].allSatisfy(\.isNumber) else { throw StepImportError.invalidRecord }
+            return .init(resource: name, userID: parts[1], start: proof.start, end: proof.end, steps: proof.steps)
+        }
         guard source?["platform"] as? String == "GOOGLE_WEB_API",
               (app?["googleWebClientId"] as? String ?? app?["webClientId"] as? String) == recorderClientID,
               exercise?["exerciseType"] as? String == "WALKING" else { return nil }

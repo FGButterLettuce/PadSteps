@@ -50,6 +50,7 @@ targets:
       properties:
         GIDClientID: ${PADSTEPS_IOS_CLIENT_ID}
         PadStepsRecorderClientID: ${PADSTEPS_RECORDER_CLIENT_ID}
+        PadStepsCorrectionPublicKey: ${PADSTEPS_CORRECTION_PUBLIC_KEY}
         CFBundleURLTypes:
           - CFBundleURLSchemes:
               - ${PADSTEPS_IOS_CALLBACK_SCHEME}

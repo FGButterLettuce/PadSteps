@@ -20,6 +20,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     @Published var linked = false
     @Published var syncing = false
     @Published var syncingWalkID: UUID?
+    @Published var overlapReports: [UUID: OverlapReport] = [:]
     let directory: URL
     let google: GoogleConnection
     private var central: CBCentralManager!
@@ -209,12 +210,26 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             syncingWalkID = pending.id
             var walk = pending
             do {
+                if walk.canRecheckOverlap {
+                    walk.status = walk.averageBPM == nil ? "waitingHeartRate" : "ready"
+                    walk.reviewKind = nil
+                    try update(walk)
+                }
                 let identity = try await google.request("GET", "users/me/identity")
                 guard let user = identity["healthUserId"] as? String else { throw PadError.message("Google didn’t identify the connected health account.") }
                 if let expected = state.healthUserID, expected != user {
                     throw PadError.message("This is a different Google Health account. Reconnect the account used for your saved walks.")
                 }
                 state.healthUserID = user; try persist()
+                if walk.canRecheckSavedOverlap {
+                    let overlaps = try await workouts(near: walk).filter { $0["name"] as? String != walk.resourceName }
+                    if !overlaps.isEmpty {
+                        await loadComparison(walk: walk, points: overlaps)
+                        continue
+                    }
+                    walk.status = "verifying"; walk.reviewKind = nil
+                    try update(walk)
+                }
                 if walk.status == "waitingHeartRate" {
                     let points = try await google.pages("users/me/dataTypes/heart-rate/dataPoints", query: [
                         "pageSize": "10000", "dataSourceFamily": "users/me/dataSourceFamilies/google-wearables",
@@ -237,22 +252,31 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                         try update(walk); continue
                     }
                 }
+                // A correction always keeps the same resource, including across crashes/timeouts.
+                if let target = walk.correctionTarget { walk.resourceName = target }
                 // Resolve crash/timeout uncertainty by finding the existing workout, never another POST.
                 if walk.resourceName == nil {
                     let existing = try await workouts(near: walk)
                     let same = existing.filter { matches($0, walk: walk) }
-                    let decision = UploadGuard.decide(attempted: walk.status == "attempted" || walk.status == "verifying",
+                    try evidence("overlap-check", walk: walk, value: existing)
+                    let decision = UploadGuard.decide(attempted: walk.uploadAttempted == true || walk.status == "attempted" || walk.status == "verifying",
                         matchingNames: same.compactMap { $0["name"] as? String }, hasOverlap: !existing.isEmpty, operationName: walk.operationName)
                     switch decision {
                     case .adopt(let name):
                         walk.resourceName = name; walk.status = "verifying"; try update(walk)
                     case .review(let reason):
-                        walk.status = "review"; walk.detail = reason; try update(walk); continue
+                        walk.status = "review"; walk.detail = reason
+                        if reason == UploadGuard.overlapMessage {
+                            walk.reviewKind = "overlap"
+                            await loadComparison(walk: walk, points: existing)
+                        }
+                        try update(walk); continue
                     case .resolveOperation(let operation):
                         try await resolveOperation(operation, walk: &walk)
                     case .create:
                         let body = payload(walk)
                         try evidence("upload-payload", walk: walk, value: body)
+                        walk.uploadAttempted = true; walk.reviewKind = nil
                         walk.status = "attempted"; walk.detail = "Saving to Google Health…"; try update(walk)
                         let operation = try await google.request("POST", "users/me/dataTypes/exercise/dataPoints", body: body)
                         try evidence("create-response", walk: walk, value: operation)
@@ -266,13 +290,134 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                     let saved = try await google.request("GET", name)
                     guard matches(saved, walk: walk) else { throw PadError.message("Google’s saved workout differs from the pad. Automatic retry is paused.") }
                     try evidence("google-readback", walk: walk, value: saved)
-                    walk.status = "saved"; walk.detail = "Saved to Google Health • ready for Bevel"
+                    walk.status = "saved"; walk.detail = "Saved to Google Health • steps ready for iPhone sync"
+                    overlapReports[walk.id] = nil
                     try update(walk)
                 }
             } catch {
                 walk.detail = error.localizedDescription
                 do { try update(walk) } catch { break }
             }
+        }
+        await auditRecentSavedWalks()
+    }
+
+    private func auditRecentSavedWalks() async {
+        // Fitbit auto-detection may arrive after our upload; surface that later overlap too.
+        let recent = state.walks.filter { $0.status == "saved" && $0.exportEnd > Date().addingTimeInterval(-3 * 86400) }
+        for var walk in recent.prefix(20) {
+            do {
+                try await verifyAccount()
+                let all = try await workouts(near: walk)
+                try evidence("post-save-overlaps", walk: walk, value: all)
+                let points = all.filter { $0["name"] as? String != walk.resourceName }
+                if !points.isEmpty {
+                    walk.status = "review"; walk.reviewKind = "lateOverlap"
+                    walk.detail = "Another Google workout now overlaps this saved PadSteps walk. Keep the measured PadSteps workout and resolve the extra workout in Google Health, then Check again."
+                    try update(walk)
+                    await loadComparison(walk: walk, points: points)
+                }
+            } catch { break } // Keep a verified saved walk saved when an audit is temporarily unavailable.
+        }
+    }
+
+    func recheck(_ id: UUID) {
+        guard !syncing, let walk = state.walks.first(where: { $0.id == id }), (walk.hasOverlapReview || walk.canReviewCorrection) else { return }
+        retrySync()
+    }
+
+    func inspectOverlap(_ id: UUID) async {
+        guard !syncing, google.connected, let walk = state.walks.first(where: { $0.id == id }), (walk.hasOverlapReview || walk.canReviewCorrection) else { return }
+        syncing = true; syncingWalkID = id
+        defer { syncing = false; syncingWalkID = nil }
+        do {
+            try await verifyAccount()
+            let points = try await workouts(near: walk).filter { walk.canReviewCorrection || $0["name"] as? String != walk.resourceName }
+            try evidence("overlap-check", walk: walk, value: points)
+            await loadComparison(walk: walk, points: points)
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func verifyAccount() async throws {
+        let identity = try await google.request("GET", "users/me/identity")
+        guard let user = identity["healthUserId"] as? String, user == state.healthUserID else {
+            throw PadError.message("Connect the Google Health account used for this walk before reviewing it.")
+        }
+    }
+
+    private func loadComparison(walk: AutomaticWalk, points: [[String: Any]]) async {
+        var count: Int?; var failure: String?
+        do {
+            let response = try await google.request("POST", "users/me/dataTypes/steps/dataPoints:rollUp", body: [
+                "range": ["startTime": Self.iso(walk.start), "endTime": Self.iso(walk.exportEnd)],
+                "windowSize": "\(walk.seconds)s", "pageSize": 10,
+                "dataSourceFamily": "users/me/dataSourceFamilies/all-sources"])
+            count = StepComparison.rollupCount(response)
+            try evidence("interval-steps", walk: walk, value: response)
+        } catch { failure = "Google’s interval steps could not be read. Try Check again." }
+        if count == nil, failure == nil { failure = "Google returned no confirmed step total for this interval; the shortfall is unknown." }
+        overlapReports[walk.id] = OverlapReport(checkedAt: Date(), workouts: points.compactMap(WorkoutConflict.init),
+            comparison: StepComparison(pad: walk.steps, recorded: count), intervalError: failure)
+    }
+
+    /// An explicit review action changes one existing resource to absolute pad totals, never adds a delta workout.
+    func correctExistingWorkout(walkID: UUID, conflict: WorkoutConflict) async {
+        guard !syncing, persistenceHealthy, google.connected,
+              var walk = state.walks.first(where: { $0.id == walkID }),
+              (walk.canRecheckOverlap || (walk.canReviewCorrection && walk.correctionTarget == conflict.id)),
+              conflict.coversSameWalk(walk), walk.averageBPM != nil else { return }
+        syncing = true; syncingWalkID = walkID
+        defer { syncing = false; syncingWalkID = nil }
+        do {
+            try await verifyAccount()
+            let key = try CorrectionSigner.key()
+            let points = try await workouts(near: walk)
+            guard points.count == 1, let original = points.first,
+                  WorkoutConflict(point: original) == conflict else {
+                await loadComparison(walk: walk, points: points)
+                throw PadError.message("Google’s workout changed since review. Check the refreshed comparison before correcting it.")
+            }
+            let proof = WorkoutCorrection(walk: walk, resource: conflict.id, recorderClientID: google.clientID)
+            let measured = payload(walk)["exercise"] as! [String: Any]
+            var exercise = original["exercise"] as! [String: Any]
+            var metrics = exercise["metricsSummary"] as? [String: Any] ?? [:]
+            for (key, value) in measured["metricsSummary"] as! [String: Any] { metrics[key] = value }
+            for (key, value) in measured where key != "metricsSummary" { exercise[key] = value }
+            exercise["metricsSummary"] = metrics
+            exercise.removeValue(forKey: "createTime"); exercise.removeValue(forKey: "updateTime")
+            // Splits and pause events were measured on Google's old interval and cannot be silently rebased.
+            exercise.removeValue(forKey: "splitSummaries"); exercise.removeValue(forKey: "exerciseEvents")
+            let oldNotes = (exercise["notes"] as? String ?? "").split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.hasPrefix("PadSteps-v1:") }.joined(separator: "\n")
+            exercise["notes"] = (oldNotes.isEmpty ? "" : oldNotes + "\n") + (try proof.signedNote(privateKey: key.rawRepresentation))
+            var body: [String: Any] = ["name": conflict.id, "exercise": exercise]
+            if var source = original["dataSource"] as? [String: Any] {
+                source.removeValue(forKey: "platform"); source.removeValue(forKey: "application")
+                body["dataSource"] = source
+            }
+            try evidence("before-correction", walk: walk, value: original)
+            try evidence("correction-payload", walk: walk, value: body)
+            // Persist target before PATCH. Timeout/restart can only read this same resource, never create another.
+            walk.correctionTarget = conflict.id; walk.resourceName = conflict.id; walk.uploadAttempted = true
+            walk.status = "verifying"; walk.reviewKind = nil; walk.detail = "Correcting the existing Google workout…"
+            try update(walk)
+            let operation = try await google.request("PATCH", conflict.id, body: body)
+            try evidence("correction-response", walk: walk, value: operation)
+            try applyOperation(operation, walk: &walk)
+            if let operationName = walk.operationName { try await resolveOperation(operationName, walk: &walk) }
+            let saved = try await google.request("GET", conflict.id)
+            guard CorrectionSigner.verified(saved, walk: walk, clientID: google.clientID) else {
+                throw PadError.message("Google has not confirmed the corrected pad counters yet. Check save confirmation; no duplicate workout was created.")
+            }
+            try evidence("google-readback", walk: walk, value: saved)
+            walk.status = "saved"; walk.detail = "Existing Google workout corrected • steps ready for iPhone sync"
+            overlapReports[walk.id] = nil; try update(walk)
+        } catch {
+            if walk.correctionTarget != nil {
+                walk.status = "verifying"
+                walk.detail = "Correction not confirmed: \(error.localizedDescription) No additional workout will be created."
+            } else { self.error = error.localizedDescription }
+            try? update(walk)
         }
     }
 
@@ -305,9 +450,10 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
         }
     }
     private func matches(_ point: [String: Any], walk: AutomaticWalk) -> Bool {
-        guard let source = point["dataSource"] as? [String: Any], let app = source["application"] as? [String: Any],
+        if CorrectionSigner.verified(point, walk: walk, clientID: google.clientID) { return true }
+        guard let source = point["dataSource"] as? [String: Any], source["platform"] as? String == "GOOGLE_WEB_API", let app = source["application"] as? [String: Any],
               (app["googleWebClientId"] as? String ?? app["webClientId"] as? String) == google.clientID,
-              let exercise = point["exercise"] as? [String: Any], let interval = exercise["interval"] as? [String: Any],
+              let exercise = point["exercise"] as? [String: Any], exercise["exerciseType"] as? String == "WALKING", let interval = exercise["interval"] as? [String: Any],
               let left = interval["startTime"] as? String, let right = interval["endTime"] as? String,
               let start = Self.date(left), let end = Self.date(right),
               abs(start.timeIntervalSince(walk.start)) < 0.002, abs(end.timeIntervalSince(walk.exportEnd)) < 0.002,

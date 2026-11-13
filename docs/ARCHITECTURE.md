@@ -4,7 +4,7 @@ Three pieces, two native apps, no PadSteps health-data server.
 
 ## Shared core
 
-`PadStepsCore` uses Foundation and exposes the pad protocol, cumulative recording
+`PadStepsCore` uses Foundation and CryptoKit and exposes the pad protocol, cumulative recording
 state, time-weighted heart-rate coverage, upload decisions and step import
 identity. Its tests run without Bluetooth, Google or HealthKit. Fixtures use
 fictional identities and measurements; idle protocol vectors contain no account
@@ -25,7 +25,9 @@ then creates one Google walking workout and verifies the returned record.
 The upload journal is intentionally conservative. After an uncertain POST, the
 app resolves the recorded operation or adopts a matching existing workout.
 It does not blindly POST the same workout again. A different overlapping workout
-can hold the walk for review.
+can hold the walk for review. Reviews can recheck deleted overlaps, compare
+interval counts and offer an explicit in-place correction. See
+[overlapping workouts](OVERLAPPING-WORKOUTS.md).
 
 Data is stored in the current Mac bundle ID's Application Support directory.
 An instance lock prevents two copies from writing the same recorder state.
@@ -36,7 +38,9 @@ data folder is not reused by this public build.
 
 The phone has its own native Google session and read-only fitness scope. It
 reads finished Google exercises and accepts only WALKING records whose source
-matches the configured Mac OAuth client ID. It never POSTs to Google.
+matches the configured Mac OAuth client ID, or whose corrected pad measurements
+carry a signature from the paired local recorder and match Google readback.
+It never POSTs to Google.
 
 Each imported walk uses:
 
