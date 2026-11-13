@@ -1,0 +1,38 @@
+name: Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  core-and-publication:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Shared core tests
+        run: swift test
+      - name: Public tree boundary
+        run: python3 scripts/check_public_tree.py
+  native-builds:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate compile-only project
+        run: python3 scripts/configure.py --ci
+      - name: Build Mac app without signing
+        run: xcodebuild -project PadSteps.xcodeproj -scheme PadStepsMac -destination 'platform=macOS' -derivedDataPath build/mac CODE_SIGNING_ALLOWED=NO build
+      - name: Build iPhone app for Simulator
+        run: xcodebuild -project PadSteps.xcodeproj -scheme PadStepsPhone -destination 'generic/platform=iOS Simulator' -derivedDataPath build/phone CODE_SIGNING_ALLOWED=NO build
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
