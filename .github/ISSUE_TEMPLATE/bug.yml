@@ -1,0 +1,25 @@
+name: Bug report
+description: Report a reproducible PadSteps problem without private health data.
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach tokens, OAuth downloads, health exports or raw personal recordings. Report security issues privately through the Security tab.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Hardware and platform versions
+      description: Walking-pad model, macOS/iOS versions and source revision. No device UUIDs.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps or synthetic example
+    validations:
+      required: true

@@ -1,0 +1,6 @@
+{
+  "apple_team_id": "YOURTEAMID",
+  "mac_bundle_id": "com.example.padsteps.desktop",
+  "phone_bundle_id": "com.example.padsteps.iphone",
+  "google_ios_client_id": "YOUR_IOS_CLIENT_ID.apps.googleusercontent.com"
+}

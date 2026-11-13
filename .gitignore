@@ -1,0 +1,37 @@
+# Credentials and machine-local settings
+.local/
+.secrets/
+.env
+.env.*
+!.env.example
+apps/macOS/Resources/oauth-client.json
+*.p8
+*.p12
+*.mobileprovision
+*.keychain*
+
+# Private recordings, reports and captures never belong in this repository
+proof-runs/
+captures/
+Walks/
+*health-diagnostic*.json
+*health-proof*.json
+step-sync-*.json
+state.json
+*token*.json
+*oauth-client*.json
+!config/desktop-oauth.example.json
+
+# Generated projects and build caches
+*.xcodeproj/
+*.xcworkspace/
+.swiftpm/
+.build/
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.log
+__pycache__/
+.venv/
+.DS_Store
