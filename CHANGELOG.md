@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Expose read-only source comparisons on saved walks and document Bevel direct
+  Google versus Apple Health step duplication.
+
 - Recheck pre-upload overlap reviews after an exercise is removed.
 - Compare pad steps with reconciled Google interval steps and workout summaries.
 - Review an in-place correction instead of creating a second workout; pair the

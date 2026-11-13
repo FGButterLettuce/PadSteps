@@ -20,6 +20,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     @Published var linked = false
     @Published var syncing = false
     @Published var syncingWalkID: UUID?
+    @Published var sourceAuditSummary: [UUID: String] = [:]
     @Published var overlapReports: [UUID: OverlapReport] = [:]
     let directory: URL
     let google: GoogleConnection
@@ -336,6 +337,36 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             try evidence("overlap-check", walk: walk, value: points)
             await loadComparison(walk: walk, points: points)
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// Read-only diagnosis of retained tracker steps versus all-source daily credit.
+    func auditStepSources(_ id: UUID) async {
+        guard !syncing, google.connected, let walk = state.walks.first(where: { $0.id == id }) else { return }
+        syncing = true; syncingWalkID = id
+        defer { syncing = false; syncingWalkID = nil }
+        do {
+            try await verifyAccount()
+            var counts: [String: Int] = [:]
+            if self.error?.hasPrefix("Couldn’t inspect step sources:") == true { self.error = nil }
+            sourceAuditSummary[id] = "Checking Google’s step sources…"
+            let day = Calendar.current.startOfDay(for: walk.start)
+            let end = min(Date(), Calendar.current.date(byAdding: .day, value: 1, to: day)!)
+            for family in ["all-sources", "google-wearables"] {
+                for (label, start, stop) in [("walk", walk.start, walk.exportEnd), ("day", day, end)] {
+                    let response = try await google.request("POST", "users/me/dataTypes/steps/dataPoints:rollUp", body: [
+                        "range": ["startTime": Self.iso(start), "endTime": Self.iso(stop)],
+                        "windowSize": "86400s", "pageSize": 10,
+                        "dataSourceFamily": "users/me/dataSourceFamilies/\(family)"])
+                    if let count = StepComparison.rollupCount(response) { counts[label + "-" + family] = count }
+                    try evidence("source-audit-\(label)-\(family)", walk: walk, value: response)
+                }
+            }
+            func number(_ key: String) -> String { counts[key].map { $0.formatted() } ?? "Unknown" }
+            sourceAuditSummary[id] = "Pad: \(walk.steps.formatted()) steps. Google in this walk: \(number("walk-all-sources")); tracker only: \(number("walk-google-wearables")). This date in Google: \(number("day-all-sources")); tracker only: \(number("day-google-wearables")). Workout summaries are separate."
+        } catch {
+            sourceAuditSummary[id] = "Step source check failed. No health data changed."
+            self.error = "Couldn’t inspect step sources: \(error.localizedDescription)"
+        }
     }
 
     private func verifyAccount() async throws {

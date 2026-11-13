@@ -52,6 +52,31 @@ new steps can appear downstream.
 
 Editing an exercise summary does not establish daily Google step credit.
 
+## Bevel can combine direct and Apple Health steps
+
+Apple Health's merged total and Bevel's direct Google integration are separate
+aggregation paths. A single PadSteps sample is not proof that Bevel has resolved
+cross-source overlap. Bevel can add direct Google/Fitbit steps to full pad counts
+from Apple Health even while Apple Health's own displayed daily total correctly
+resolves their overlap.
+
+In Bevel, inspect Profile → Data Sources → Steps → Hide Data Sources. Use one
+route for the same Fitbit measurements. When Google/Fitbit readings also arrive
+through Apple Health, hiding the **direct Google Health steps source** while
+retaining the Apple Health sources is a route to test. Keep Google sources for
+Workouts and Heart Rate separately. Confirm the resulting step total against
+Apple Health and ensure that outside-pad steps remain. Do not delete Fitbit's
+raw readings or reduce the accurate pad measurements just to offset a downstream
+source configuration. Deleting a Google exercise does not demonstrate that its
+underlying tracker steps disappeared.
+
+Saved Mac walks now have **Compare step sources**. This read-only check displays
+Google's all-sources and tracker-only counts for the selected pad interval and
+its local date. It does not change any workout or step data. Reading the Google
+daily count separately from exercise summaries helps diagnose this case.
+
+[Bevel documents per-category source visibility](https://help.bevel.health/en/articles/10416897).
+
 ## Late Fitbit detection
 
 Normal sync also audits up to 20 saved walks from the last three days. If another

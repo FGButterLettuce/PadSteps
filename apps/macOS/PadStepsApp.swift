@@ -132,6 +132,13 @@ struct DesktopView: View {
                                 .monospacedDigit()
                             Text(walk.issue ?? walk.detail).font(.callout).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                            if walk.status == "saved" {
+                                Button("Compare step sources") { Task { await monitor.auditStepSources(walk.id) } }
+                                    .disabled(!google.connected || monitor.syncing)
+                                if let summary = monitor.sourceAuditSummary[walk.id] {
+                                    Text(summary).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                                }
+                            }
                             if walk.hasOverlapReview || walk.canReviewCorrection {
                                 OverlapReviewView(monitor: monitor, walk: walk)
                             } else if walk.status == "verifying" || walk.status == "attempted" {
