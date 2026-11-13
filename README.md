@@ -24,17 +24,7 @@ binary. You supply your own Google OAuth project and Apple signing settings.
 
 ## The flow
 
-```mermaid
-flowchart LR
-    Pad["Sperax P2 Max\nactual counters"] -->|Bluetooth| Mac["PadSteps for Mac"]
-    Fitbit["Fitbit heart-rate history"] --> Google["Google Health"]
-    Google -->|read heart rate| Mac
-    Mac -->|one walking workout| Google
-    Google -->|read finished walk| Phone["PadSteps for iPhone"]
-    Phone -->|steps only| Apple["Apple Health"]
-    Apple -->|chosen step source| Bevel["Bevel"]
-    Google -->|existing workout + HR connection| Bevel
-```
+![PadSteps data flow: pad counters and synced Fitbit heart rate reach the Mac; Google keeps one workout; the iPhone adds only steps to Apple Health for Bevel.](assets/flow.png)
 
 - Start and stop the belt using its remote. The Mac detects the walk.
 - Steps come from the pad's counter, not a speed-to-step estimate.
@@ -129,11 +119,6 @@ pads has not been established.
 See [architecture](docs/ARCHITECTURE.md), [protocol notes](docs/PROTOCOL.md),
 [privacy and data boundaries](docs/PRIVACY.md), [contributing](CONTRIBUTING.md),
 and [security reporting](SECURITY.md).
-
-## Brand
-
-An open belt-loop **P**, with a separate lower tread. Forest green, soft lime,
-warm paper. Editable source and usage notes live in [the brand guide](docs/BRAND.md).
 
 Independent community software. Not affiliated with Sperax, Fitbit, Google,
 Apple or Bevel. Those names identify compatibility and remain their owners'

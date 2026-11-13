@@ -83,3 +83,53 @@ try png(width: 1280, height: 640, alpha: false, to: "assets/brand/github-hero.pn
     ctx.restoreGState()
 }
 print("Rendered Mac icon, iPhone icon and 1280 × 640 GitHub/social header.")
+
+// A static diagram avoids GitHub's client-side Mermaid renderer entirely.
+try png(width: 960, height: 1120, alpha: false, to: "assets/flow.png") { ctx in
+    ctx.setFillColor(forest.cgColor); ctx.fill(CGRect(x: 0, y: 0, width: 960, height: 1120))
+    func text(_ value: String, x: CGFloat, top: CGFloat, size: CGFloat, color: NSColor, weight: NSFont.Weight = .regular) {
+        (value as NSString).draw(at: NSPoint(x: x, y: 1120-top-size*1.2), withAttributes: [
+            .font: NSFont.systemFont(ofSize: size, weight: weight), .foregroundColor: color])
+    }
+    func box(_ title: String, _ detail: String, x: CGFloat, top: CGFloat) {
+        ctx.setFillColor(NSColor(srgbRed: 0.12, green: 0.30, blue: 0.25, alpha: 1).cgColor)
+        ctx.setStrokeColor(lime.cgColor); ctx.setLineWidth(2)
+        ctx.addPath(CGPath(roundedRect: CGRect(x: x, y: 1120-top-120, width: 384, height: 120), cornerWidth: 16, cornerHeight: 16, transform: nil))
+        ctx.drawPath(using: .fillStroke)
+        text(title, x: x+24, top: top+25, size: 27, color: paper, weight: .semibold)
+        text(detail, x: x+24, top: top+68, size: 20, color: paper)
+    }
+    func arrow(_ points: [(CGFloat, CGFloat)]) {
+        ctx.setStrokeColor(lime.cgColor); ctx.setFillColor(lime.cgColor); ctx.setLineWidth(3)
+        ctx.setLineJoin(.round); ctx.setLineCap(.round)
+        let points = points.map { CGPoint(x: $0.0, y: 1120-$0.1) }
+        ctx.move(to: points[0]); for point in points.dropFirst() { ctx.addLine(to: point) }; ctx.strokePath()
+        let end = points.last!, before = points[points.count-2]
+        let angle = atan2(end.y-before.y, end.x-before.x)
+        ctx.move(to: end)
+        for offset in [CGFloat.pi*0.82, -CGFloat.pi*0.82] {
+            ctx.addLine(to: CGPoint(x: end.x+13*cos(angle+offset), y: end.y+13*sin(angle+offset)))
+        }
+        ctx.closePath(); ctx.fillPath()
+    }
+    box("Sperax P2 Max", "Measured steps + distance", x: 48, top: 64)
+    box("Fitbit via Google Health", "Synced heart-rate history", x: 528, top: 64)
+    box("PadSteps for Mac", "Records and combines the walk", x: 288, top: 280)
+    box("Google Health", "One walking workout with HR", x: 288, top: 496)
+    box("PadSteps for iPhone", "Reads the finished Google walk", x: 528, top: 712)
+    box("Apple Health", "Measured step records only", x: 528, top: 928)
+    box("Bevel", "Workout + HR + chosen steps", x: 48, top: 928)
+    arrow([(240,184),(240,232),(464,232),(464,280)])
+    arrow([(720,184),(720,232),(496,232),(496,280)])
+    arrow([(480,400),(480,496)])
+    text("Save one workout", x: 505, top: 431, size: 20, color: lime)
+    arrow([(480,616),(480,664),(720,664),(720,712)])
+    text("Read workout", x: 570, top: 628, size: 20, color: lime)
+    arrow([(288,556),(240,556),(240,928)])
+    text("Workout + HR", x: 64, top: 731, size: 21, color: lime)
+    arrow([(720,832),(720,928)])
+    text("Steps only", x: 742, top: 861, size: 20, color: lime)
+    arrow([(528,988),(432,988)])
+    text("Steps", x: 446, top: 1007, size: 19, color: lime)
+}
+print("Rendered static README flow diagram.")
