@@ -112,7 +112,7 @@ under a new Google resource ID.
 Set `"auto_correct_matching_workouts": true` in the local settings to let the Mac
 reuse a single matching Fitbit Air WALKING exercise automatically. Default is
 false for existing public configurations. Both start/end must match within 60
-seconds, its source and recording method must be known, and the pad upload must
+seconds and at least 90% of both intervals must overlap. Its source and recording method must be known, and the pad upload must
 not already have an uncertain result. Manual entries, other devices, partial or
 multiple overlaps stay in review. The same snapshot/revalidation, signed receipt,
 persisted PATCH target and readback rules apply. A native-source update may be

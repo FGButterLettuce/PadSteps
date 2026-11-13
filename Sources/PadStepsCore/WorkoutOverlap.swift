@@ -52,6 +52,9 @@ public struct WorkoutConflict: Codable, Identifiable, Equatable, Sendable {
               let method = source["recordingMethod"] as? String,
               ["ACTIVELY_MEASURED", "PASSIVELY_MEASURED", "DERIVED"].contains(method),
               let conflict = WorkoutConflict(point: point), conflict.coversSameWalk(walk) else { return nil }
+        let overlap = min(conflict.end, walk.exportEnd).timeIntervalSince(max(conflict.start, walk.start))
+        guard overlap >= 0.9 * walk.exportEnd.timeIntervalSince(walk.start),
+              overlap >= 0.9 * conflict.end.timeIntervalSince(conflict.start) else { return nil }
         return conflict
     }
     public func coversSameWalk(_ walk: AutomaticWalk) -> Bool {
