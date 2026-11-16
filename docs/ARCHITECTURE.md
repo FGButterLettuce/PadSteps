@@ -82,3 +82,13 @@ The phone registers step and (when permitted) workout background delivery. Apple
 limits step delivery frequency to hourly; iOS may schedule it later. App-open
 checks and scheduled refresh remain catch-up routes. Background registration is
 not proof of an end-to-end wake for a newly recorded walk.
+
+### Heart-rate coverage
+
+The Mac requires Fitbit Air samples within five seconds of both walk boundaries.
+Intervals over 15 seconds are treated as unobserved and excluded from the
+weighted average. Isolated gaps up to 30 seconds are accepted only when their
+combined duration is at most 5% of the walk. Longer or more extensive gaps keep
+the walk queued with a coverage-specific message. No missing heart-rate samples
+are created. Downloaded observations remain in local evidence, including failed
+coverage checks, so a sensor dropout is distinguishable from delayed sync.

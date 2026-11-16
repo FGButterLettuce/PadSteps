@@ -109,12 +109,21 @@ public struct HeartObservation: Codable, Equatable, Sendable {
     public init(at: Date, bpm: Int) { self.at = at; self.bpm = bpm }
 }
 
-public enum HeartCoverageError: Error { case waitingForSync, internalGap }
+public enum HeartCoverageError: Error, LocalizedError {
+    case waitingForSync, internalGap
+    public var errorDescription: String? {
+        switch self {
+        case .waitingForSync: return "Waiting for heart rate at the start or end of this walk. Open Google Health on your iPhone to sync Fitbit Air."
+        case .internalGap: return "Fitbit heart rate has substantial gaps. Your walk is stored safely; sync Fitbit Air in Google Health and retry."
+        }
+    }
+}
 
 public struct HeartSummary: Sendable {
     public let average: Int
     public let samples: Int
     public let maxGap: TimeInterval
+    public let uncoveredSeconds: TimeInterval
     public static func calculate(_ observations: [HeartObservation], start: Date, end: Date) throws -> HeartSummary {
         let points = observations.filter { $0.at >= start && $0.at <= end && (25...240).contains($0.bpm) }
             .sorted { $0.at < $1.at }
@@ -124,13 +133,20 @@ public struct HeartSummary: Sendable {
         }
         let gaps = zip(points, points.dropFirst()).map { $1.at.timeIntervalSince($0.at) }
         let maximum = gaps.max() ?? 0
-        guard maximum <= 15 else { throw HeartCoverageError.internalGap }
-        // Midpoints give each real observation its time weight; no invented HR records.
-        let boundaries = [start] + zip(points, points.dropFirst()).map {
-            $0.at.addingTimeInterval($1.at.timeIntervalSince($0.at) / 2)
-        } + [end]
-        let weights = zip(boundaries, boundaries.dropFirst()).map { $1.timeIntervalSince($0) }
+        let duration = end.timeIntervalSince(start)
+        // A brief sensor dropout must not leave a well-covered walk queued forever.
+        // Treat gaps over 15 seconds as unobserved, rather than filling them in.
+        let missing = gaps.filter { $0 > 15 }.reduce(0, +)
+        guard maximum <= 30, missing <= duration * 0.05 else { throw HeartCoverageError.internalGap }
+        let weights = points.indices.map { index -> TimeInterval in
+            let left = index == 0 ? first.at.timeIntervalSince(start) : (gaps[index - 1] <= 15 ? gaps[index - 1] / 2 : 0)
+            let right = index == points.count - 1 ? end.timeIntervalSince(last.at) : (gaps[index] <= 15 ? gaps[index] / 2 : 0)
+            return left + right
+        }
+        let observedDuration = weights.reduce(0, +)
+        guard observedDuration > 0 else { throw HeartCoverageError.internalGap }
         let total = zip(points, weights).reduce(0.0) { $0 + Double($1.0.bpm) * $1.1 }
-        return HeartSummary(average: Int((total / end.timeIntervalSince(start)).rounded()), samples: points.count, maxGap: maximum)
+        return HeartSummary(average: Int((total / observedDuration).rounded()), samples: points.count,
+                            maxGap: maximum, uncoveredSeconds: missing)
     }
 }

@@ -254,13 +254,13 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                               let number = h["beatsPerMinute"] as? String, let bpm = Int(number) else { return nil }
                         return HeartObservation(at: at, bpm: bpm)
                     }
+                    try evidence("fitbit-heart-rate", walk: walk, value: points)
                     do {
                         let summary = try HeartSummary.calculate(heart, start: walk.start, end: walk.exportEnd)
                         walk.averageBPM = summary.average; walk.status = "ready"
-                        try evidence("fitbit-heart-rate", walk: walk, value: points)
                         try update(walk)
-                    } catch {
-                        walk.detail = "Waiting for Fitbit heart rate. Open Google Health on your iPhone to sync Fitbit Air."
+                    } catch let error as HeartCoverageError {
+                        walk.detail = error.localizedDescription
                         try update(walk); continue
                     }
                 }
