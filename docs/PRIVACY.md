@@ -52,3 +52,13 @@ records before changing bundle IDs, accounts or local storage.
 
 This file describes the public source build, not a hosted privacy service or a
 promise about independently modified forks.
+
+## Paired-device measured-step feed
+
+The Mac retains a signed manifest of confirmed pad session IDs, times and step
+counts in its private Application Support folder. Xcode's trusted device service
+copies it directly to the configured iPhone companion's private container. The
+phone verifies the signature, account, recorder identity, dates and counters
+before applying its existing HealthKit duplicate guards. The feed is independent
+of whether Google needs a new workout. It is not published to a health-data
+server or included in this repository.

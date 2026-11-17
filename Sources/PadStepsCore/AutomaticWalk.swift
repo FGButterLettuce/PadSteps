@@ -30,6 +30,12 @@ public struct AutomaticWalk: Codable, Identifiable, Sendable {
     public var reviewKind: String?
     public var correctionTarget: String?
     public var averageBPM: Int?
+    public var originalTotals: RecordedWalkTotals?
+    public var totalsConfirmedAt: Date?
+    public var heartRateOmitted: Bool?
+    public var creationRejected: Bool?
+    public var pausedFromStatus: String?
+    public var gapExport: WorkoutGapExport?
     public var detail = ""
     public var steps: Int { max(0, last.steps + stepWraps * 65536 - baselineSteps) }
     public var seconds: Int { max(0, last.seconds + clockWraps * 65536 - baselineSeconds) }
@@ -45,7 +51,7 @@ public struct AutomaticWalk: Codable, Identifiable, Sendable {
     public var canRecheckSavedOverlap: Bool { status == "review" && reviewKind == "lateOverlap" && resourceName != nil && issue == nil }
     public var canReviewCorrection: Bool { status == "verifying" && correctionTarget != nil && issue == nil }
     public var hasOverlapReview: Bool { canRecheckOverlap || canRecheckSavedOverlap }
-    public var needsSync: Bool { ["waitingHeartRate", "ready", "attempted", "verifying"].contains(status) || hasOverlapReview }
+    public var needsSync: Bool { ["waitingHeartRate", "ready", "attempted", "verifying"].contains(status) || hasOverlapReview || canCheckUpload || (status == "review" && issue == nil && gapExport != nil) }
 }
 
 /// One pad, any number of walks. A disconnect is never treated as a stop.
@@ -80,6 +86,7 @@ public struct AutomaticRecorder: Codable, Sendable {
         if (stepBack && !stepWrap) || (clockBack && !clockWrap) || sample.metres < walk.last.metres {
             walk.stop = walk.last.at; walk.status = "review"
             walk.issue = "Pad counters reset before a confirmed stop. This walk needs review."
+            walk.reviewKind = "counterReset"
             active = nil; lastIdle = nil; stopped = []
             return walk
         }

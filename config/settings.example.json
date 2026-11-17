@@ -3,6 +3,7 @@
   "mac_bundle_id": "com.example.padsteps.desktop",
   "phone_bundle_id": "com.example.padsteps.iphone",
   "google_ios_client_id": "YOUR_IOS_CLIENT_ID.apps.googleusercontent.com",
-  "step_export_mode": "full",
-  "auto_correct_matching_workouts": false
+  "step_export_mode": "missing-google",
+  "auto_correct_matching_workouts": false,
+  "iphone_relay_device_id": ""
 }

@@ -17,17 +17,28 @@ subscribes to notifications and sends status queries. It learns the selected
 device ID at runtime; the repository has no saved peripheral UUID.
 
 The recorder preserves cumulative pad counters across reconnects. Five stable
-idle readings spanning at least four seconds finish a walk. Counter resets or
-uncertainty require review. Finished walks and upload state are persisted before
-network changes. The Mac fetches native Fitbit HR history, checks its coverage,
-then creates one Google walking workout and verifies the returned record.
+idle readings spanning at least four seconds finish a walk. A power-off/reset
+preserves its last readings and offers explicit totals confirmation.
 
-The upload journal is intentionally conservative. After an uncertain POST, the
-app resolves the recorded operation or adopts a matching existing workout.
-It does not blindly POST the same workout again. A different overlapping workout
-can hold the walk for review. Reviews can recheck deleted overlaps, compare
-interval counts and offer an explicit in-place correction. See
-[overlapping workouts](OVERLAPPING-WORKOUTS.md).
+For confirmed walks, the Mac subtracts the union of existing walking-workout
+intervals from the pad interval. It fills only gaps longer than five seconds;
+a wholly undetected walk is retained in full. Only a full-session workout gets
+full pad steps and distance. Partial-gap workouts carry actual interval HR,
+without proportionally invented steps or distance.
+
+Google assigns new exercise IDs. An attempt marker and signed session receipt
+allow an interrupted create to be found and adopted; an unknown outcome cannot
+produce another POST. Definitively rejected creates have an explicit retry.
+When Fitbit detection arrives later, PadSteps reshapes or retires only its own
+verified workouts. Native Fitbit records are never edited. Google restricts
+updates to the creating application; see [data management](https://developers.google.com/health/data-management).
+
+Full-session measured steps travel independently in a signed local manifest.
+Xcode's `devicectl` copies it over the existing trusted device pairing into the
+companion's private container. The relay targets only the configured device and
+bundle. Offline/locked transport failures queue another attempt; they do not
+cause a fake Google workout to be created as a step carrier. This transport
+requires developer tooling and is not the proposed App Store sync solution.
 
 Data is stored in the current Mac bundle ID's Application Support directory.
 An instance lock prevents two copies from writing the same recorder state.
@@ -36,17 +47,16 @@ data folder is not reused by this public build.
 
 ## iPhone steps companion
 
-The phone has its own native Google session and read-only fitness scope. It
-reads finished Google exercises and accepts only WALKING records whose source
-matches the configured Mac OAuth client ID, or whose corrected pad measurements
-carry a signature from the paired local recorder and match Google readback.
-It never POSTs to Google.
+The phone keeps a native read-only Google session for baseline steps and legacy
+workouts. It verifies the local manifest against the paired Mac public key,
+expected account and recorder client ID. New sessions use a UUID-based sync
+identity independent of the number of Google gap workouts. Older sessions retain
+their original Google-resource-based step identity even after their redundant
+Google workout is removed. A signature cannot cross accounts or recorder clients.
 
-Each imported walk uses:
-
-```text
-padsteps.google_<health-user-id>_<exercise-data-point-id>.steps
-```
+Legacy exercises and signed gap receipts remain readable as a fallback. Two
+workout carriers for one session resolve to the same HealthKit identity and
+measured interval. Carrier location is not treated as a conflicting measurement.
 
 Full-count exports use sync version 1. In optional `missing-google` mode, the
 version increases when Google sync changes the missing-step quantity; every

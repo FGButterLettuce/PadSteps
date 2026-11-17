@@ -22,6 +22,9 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     @Published var syncingWalkID: UUID?
     @Published var sourceAuditSummary: [UUID: String] = [:]
     @Published var overlapReports: [UUID: OverlapReport] = [:]
+    @Published var relayStatus = "Measured steps are queued for the paired iPhone."
+    var relaying = false
+    var lastRelayDigest: Data?
     let directory: URL
     let google: GoogleConnection
     private var central: CBCentralManager!
@@ -32,11 +35,13 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     private var lastTelemetry = Date.distantPast
     private var lastAttempt = Date.distantPast
     private var lastSync = Date.distantPast
+    private var lastRelayAttempt = Date.distantPast
     private var activity: NSObjectProtocol?
     private var connectingSince: Date?
     private var persistenceHealthy = true
     private var lockFD: Int32 = -1
     private var storageOpen = false
+    var canWriteSavedState: Bool { storageOpen && persistenceHealthy }
     var automaticallyReusesFitbitWalks: Bool {
         let value = String(describing: Bundle.main.object(forInfoDictionaryKey: "PadStepsAutoCorrectMatchingWalks") ?? false).lowercased()
         return ["true", "yes", "1"].contains(value)
@@ -96,6 +101,61 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
 
     func retrySync() { lastSync = .distantPast; Task { await syncPending() } }
 
+    func confirmTotals(_ id: UUID, totals: RecordedWalkTotals) {
+        guard !syncing, persistenceHealthy, let walk = state.walks.first(where: { $0.id == id }) else { return }
+        do {
+            try evidence("before-totals-recovery", walk: walk, value: JSONSerialization.jsonObject(with: JSONEncoder().encode(walk)))
+            try update(walk.confirmingTotals(totals, at: Date()))
+            retrySync()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func saveWithoutHeartRate(_ id: UUID) {
+        guard !syncing, let walk = state.walks.first(where: { $0.id == id }) else { return }
+        do { try update(walk.omittingHeartRate()); retrySync() }
+        catch { self.error = error.localizedDescription }
+    }
+
+    func keepLocal(_ id: UUID) {
+        guard !syncing, let walk = state.walks.first(where: { $0.id == id }) else { return }
+        do { try update(walk.keepingLocal()) } catch { self.error = error.localizedDescription }
+    }
+
+    func resumeChecks(_ id: UUID) {
+        guard !syncing, let walk = state.walks.first(where: { $0.id == id }) else { return }
+        do { try update(walk.resumingChecks()); retrySync() } catch { self.error = error.localizedDescription }
+    }
+
+    func showWalkFiles(_ id: UUID) {
+        guard let walk = state.walks.first(where: { $0.id == id }) else { return }
+        do {
+            try evidence("recorded-walk", walk: walk, value: JSONSerialization.jsonObject(with: JSONEncoder().encode(walk)))
+            NSWorkspace.shared.open(directory.appendingPathComponent("Walks/\(id.uuidString)"))
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func retryRejectedSave(_ id: UUID) async {
+        guard !syncing, persistenceHealthy, google.connected,
+              var walk = state.walks.first(where: { $0.id == id }), walk.canRetryRejectedSave,
+              let operationName = walk.operationName else { return }
+        syncing = true; syncingWalkID = id
+        defer { syncing = false; syncingWalkID = nil; lastSync = .distantPast }
+        do {
+            try await verifyAccount()
+            let operation = try await google.request("GET", operationName)
+            try evidence("rejected-save-recheck", walk: walk, value: operation)
+            let existing = try await workouts(near: walk)
+            let matching = existing.filter { matches($0, walk: walk) }
+            if matching.count == 1, let name = matching.first?["name"] as? String {
+                walk.resourceName = name; walk.status = "verifying"; walk.creationRejected = false
+            } else {
+                walk = try walk.retryingRejectedSave(verifiedFailure: operation["done"] as? Bool == true && operation["error"] != nil)
+                // The normal upload guard checks these workouts again before any POST.
+            }
+            try update(walk)
+        } catch { self.error = error.localizedDescription }
+    }
+
     private func tick() {
         if state.monitoring, central.state == .poweredOn {
             if let peripheral, peripheral.state == .connected {
@@ -117,6 +177,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             ProcessInfo.processInfo.endActivity(activity); self.activity = nil
         }
         if Date().timeIntervalSince(lastSync) >= 60 { Task { await syncPending() } }
+        if Date().timeIntervalSince(lastRelayAttempt) >= 60 { lastRelayAttempt = Date(); Task { await relayMeasuredWalks() } }
     }
 
     func reconnect() {
@@ -195,11 +256,11 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
         }
     }
 
-    private func update(_ walk: AutomaticWalk) throws {
+    func update(_ walk: AutomaticWalk) throws {
         guard let index = state.walks.firstIndex(where: { $0.id == walk.id }) else { return }
         state.walks[index] = walk; try persist()
     }
-    private func evidence(_ name: String, walk: AutomaticWalk, value: Any) throws {
+    func evidence(_ name: String, walk: AutomaticWalk, value: Any) throws {
         let folder = directory.appendingPathComponent("Walks/\(walk.id.uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = folder.appendingPathComponent(name + ".json")
@@ -233,6 +294,15 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                     throw PadError.message("This is a different Google Health account. Reconnect the account used for your saved walks.")
                 }
                 state.healthUserID = user; try persist()
+                if walk.gapExport == nil, walk.canRecheckSavedOverlap, let legacy = walk.resourceName {
+                    var plan = WorkoutGapExport(gaps: [], resources: [legacy])
+                    plan.legacyResource = legacy
+                    walk.gapExport = plan; try update(walk)
+                }
+                if walk.gapExport != nil || (walk.issue == nil && walk.uploadAttempted != true && walk.resourceName == nil && walk.operationName == nil && walk.correctionTarget == nil) {
+                    try await syncGapExport(walk: &walk)
+                    continue
+                }
                 if walk.canRecheckSavedOverlap {
                     let overlaps = try await workouts(near: walk).filter { $0["name"] as? String != walk.resourceName }
                     if !overlaps.isEmpty {
@@ -278,6 +348,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                         walk.resourceName = name; walk.status = "verifying"; try update(walk)
                     case .review(let reason):
                         walk.status = "review"; walk.detail = reason
+                        walk.reviewKind = "confirmation"
                         if reason == UploadGuard.overlapMessage {
                             walk.reviewKind = "overlap"
                             await loadComparison(walk: walk, points: existing)
@@ -304,9 +375,14 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                 }
                 if let name = walk.resourceName {
                     let saved = try await google.request("GET", name)
-                    guard matches(saved, walk: walk) else { throw PadError.message("Google’s saved workout differs from the pad. Automatic retry is paused.") }
+                    guard matches(saved, walk: walk) else {
+                        walk.status = "review"; walk.reviewKind = "savedMismatch"
+                        try evidence("different-google-readback", walk: walk, value: saved)
+                        throw PadError.message("Google’s saved workout differs from the pad. Compare the records before correcting the existing workout.")
+                    }
                     try evidence("google-readback", walk: walk, value: saved)
-                    walk.status = "saved"; walk.detail = "Saved to Google Health • steps ready for iPhone sync"
+                    walk.status = "saved"; walk.reviewKind = nil
+                    walk.detail = walk.heartRateOmitted == true ? "Saved without a heart-rate summary • steps ready for iPhone sync" : "Saved to Google Health • steps ready for iPhone sync"
                     overlapReports[walk.id] = nil
                     try update(walk)
                 }
@@ -324,6 +400,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
         for var walk in recent.prefix(20) {
             do {
                 try await verifyAccount()
+                if walk.gapExport != nil { try await syncGapExport(walk: &walk); continue }
                 let all = try await workouts(near: walk)
                 try evidence("post-save-overlaps", walk: walk, value: all)
                 let points = all.filter { $0["name"] as? String != walk.resourceName }
@@ -338,17 +415,17 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     }
 
     func recheck(_ id: UUID) {
-        guard !syncing, let walk = state.walks.first(where: { $0.id == id }), (walk.hasOverlapReview || walk.canReviewCorrection) else { return }
+        guard !syncing, let walk = state.walks.first(where: { $0.id == id }), walk.canInspectGoogle else { return }
         retrySync()
     }
 
     func inspectOverlap(_ id: UUID) async {
-        guard !syncing, google.connected, let walk = state.walks.first(where: { $0.id == id }), (walk.hasOverlapReview || walk.canReviewCorrection) else { return }
+        guard !syncing, google.connected, let walk = state.walks.first(where: { $0.id == id }), walk.canInspectGoogle else { return }
         syncing = true; syncingWalkID = id
         defer { syncing = false; syncingWalkID = nil }
         do {
             try await verifyAccount()
-            let points = try await workouts(near: walk).filter { walk.canReviewCorrection || $0["name"] as? String != walk.resourceName }
+            let points = try await workouts(near: walk).filter { walk.canReviewCorrection || walk.reviewKind == "savedMismatch" || $0["name"] as? String != walk.resourceName }
             try evidence("overlap-check", walk: walk, value: points)
             await loadComparison(walk: walk, points: points)
         } catch { self.error = error.localizedDescription }
@@ -410,7 +487,8 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     func correctExistingWorkout(walkID: UUID, conflict: WorkoutConflict) async {
         guard !syncing, persistenceHealthy, google.connected,
               var walk = state.walks.first(where: { $0.id == walkID }),
-              (walk.canRecheckOverlap || (walk.canReviewCorrection && walk.correctionTarget == conflict.id)),
+              (walk.canRecheckOverlap || (walk.canReviewCorrection && walk.correctionTarget == conflict.id) ||
+               (walk.reviewKind == "savedMismatch" && walk.resourceName == conflict.id)),
               conflict.coversSameWalk(walk), walk.averageBPM != nil else { return }
         syncing = true; syncingWalkID = walkID
         defer { syncing = false; syncingWalkID = nil }
@@ -469,7 +547,11 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
 
     private func applyOperation(_ operation: [String: Any], walk: inout AutomaticWalk) throws {
         walk.operationName = operation["name"] as? String ?? walk.operationName
-        if operation["error"] != nil { walk.status = "review"; walk.detail = "Google rejected the workout. The local walk is preserved." }
+        if operation["error"] != nil {
+            walk.status = "review"; walk.reviewKind = "rejectedSave"
+            walk.creationRejected = operation["done"] as? Bool == true && walk.resourceName == nil && walk.correctionTarget == nil
+            walk.detail = "Google rejected the workout. Review the saved details, then retry the rejected save or keep this walk locally."
+        }
         if let response = operation["response"] as? [String: Any], let name = response["name"] as? String {
             walk.resourceName = name; walk.status = "verifying"
         }
@@ -480,7 +562,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
         try applyOperation(result, walk: &walk)
     }
 
-    private func workouts(near walk: AutomaticWalk) async throws -> [[String: Any]] {
+    func workouts(near walk: AutomaticWalk) async throws -> [[String: Any]] {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]
         // Exercise session filters use civil time. UTC offset determines local dates.
         f.timeZone = .current
@@ -495,7 +577,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             return start < walk.exportEnd && end > walk.start
         }
     }
-    private func matches(_ point: [String: Any], walk: AutomaticWalk) -> Bool {
+    func matches(_ point: [String: Any], walk: AutomaticWalk) -> Bool {
         if CorrectionSigner.verified(point, walk: walk, clientID: google.clientID) { return true }
         guard let source = point["dataSource"] as? [String: Any], source["platform"] as? String == "GOOGLE_WEB_API", let app = source["application"] as? [String: Any],
               (app["googleWebClientId"] as? String ?? app["webClientId"] as? String) == google.clientID,
@@ -506,19 +588,20 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
               let metrics = exercise["metricsSummary"] as? [String: Any],
               String(describing: metrics["steps"] ?? "") == String(walk.steps),
               (metrics["distanceMillimeters"] as? NSNumber)?.intValue == walk.metres * 1000,
-              String(describing: metrics["averageHeartRateBeatsPerMinute"] ?? "") == String(walk.averageBPM ?? 0),
+              (walk.heartRateOmitted == true ? metrics["averageHeartRateBeatsPerMinute"] == nil : String(describing: metrics["averageHeartRateBeatsPerMinute"] ?? "") == String(walk.averageBPM ?? 0)),
               let duration = exercise["activeDuration"] as? String,
               Double(duration.dropLast()) == Double(walk.seconds) else { return false }
         return true
     }
     private func payload(_ walk: AutomaticWalk) -> [String: Any] {
-        ["dataSource": ["recordingMethod": "ACTIVELY_MEASURED", "platform": "GOOGLE_WEB_API"],
+        var metrics: [String: Any] = ["steps": String(walk.steps), "distanceMillimeters": walk.metres * 1000]
+        if let bpm = walk.averageBPM { metrics["averageHeartRateBeatsPerMinute"] = String(bpm) }
+        return ["dataSource": ["recordingMethod": "ACTIVELY_MEASURED", "platform": "GOOGLE_WEB_API"],
          "exercise": ["interval": ["startTime": Self.iso(walk.start), "endTime": Self.iso(walk.exportEnd),
                                     "startUtcOffset": "\(TimeZone.current.secondsFromGMT(for: walk.start))s",
                                     "endUtcOffset": "\(TimeZone.current.secondsFromGMT(for: walk.exportEnd))s"],
                       "exerciseType": "WALKING", "activeDuration": "\(walk.seconds)s",
-                      "metricsSummary": ["steps": String(walk.steps), "distanceMillimeters": walk.metres * 1000,
-                                         "averageHeartRateBeatsPerMinute": String(walk.averageBPM ?? 0)]]]
+                      "metricsSummary": metrics]]
     }
     static func iso(_ date: Date) -> String { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.string(from: date) }
     static func date(_ text: String) -> Date? {

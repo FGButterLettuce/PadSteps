@@ -8,6 +8,11 @@ enum PadError: LocalizedError {
     var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
 }
 
+struct GoogleHTTPError: LocalizedError {
+    let status: Int
+    var errorDescription: String? { "Google Health returned HTTP \(status). Your walk is preserved locally." }
+}
+
 @MainActor
 final class GoogleConnection: ObservableObject {
     struct Token: Codable {
@@ -220,7 +225,8 @@ final class GoogleConnection: ObservableObject {
             (data, response) = try await URLSession.shared.data(for: make(try await accessToken(force: true)))
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw PadError.message("Google Health returned HTTP \(status). Your walk is preserved locally.") }
+        guard (200..<300).contains(status) else { throw GoogleHTTPError(status: status) }
+        if data.isEmpty { return [:] }
         return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
     }
 

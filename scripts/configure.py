@@ -76,6 +76,9 @@ def main():
     auto_correct = settings.get('auto_correct_matching_workouts', False)
     if not isinstance(auto_correct, bool):
         raise SystemExit('auto_correct_matching_workouts must be true or false.')
+    relay_device = settings.get('iphone_relay_device_id', '')
+    if not isinstance(relay_device, str) or (relay_device and not re.fullmatch(r'[A-Za-z0-9-]{8,64}', relay_device)):
+        raise SystemExit('iphone_relay_device_id must be a paired-device identifier from devicectl.')
     export_mode = settings.get('step_export_mode', 'full')
     if export_mode not in ('full', 'missing-google'):
         raise SystemExit('step_export_mode must be full or missing-google.')
@@ -90,7 +93,9 @@ def main():
         'PADSTEPS_RECORDER_CLIENT_ID': oauth['installed']['client_id'],
         'PADSTEPS_CORRECTION_PUBLIC_KEY': public_key,
         'PADSTEPS_STEP_EXPORT_MODE': export_mode,
-        'PADSTEPS_AUTO_CORRECT_MATCHING_WALKS': 'YES' if auto_correct else 'NO',
+        # Native Fitbit records are owned by Fitbit; new recordings fill gaps.
+        'PADSTEPS_AUTO_CORRECT_MATCHING_WALKS': 'NO',
+        'PADSTEPS_RELAY_DEVICE_ID': relay_device,
     })
     subprocess.run(['xcodegen', 'generate', '--spec', 'project.yml'], cwd=ROOT, env=env, check=True)
     print('Local project generated. Personal settings and OAuth resources are ignored by Git.')

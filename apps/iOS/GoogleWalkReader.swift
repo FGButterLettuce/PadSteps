@@ -30,7 +30,7 @@ final class GoogleWalkReader {
         }
         while let presented = controller.presentedViewController { controller = presented }
         _ = try await GIDSignIn.sharedInstance.signIn(withPresenting: controller,
-             hint: nil, additionalScopes: [Self.scope])
+             hint: "nirusgameid@gmail.com", additionalScopes: [Self.scope])
     }
 
     func get(_ path: String, query: [URLQueryItem] = []) async throws -> [String: Any] {
@@ -130,13 +130,13 @@ final class GoogleWalkReader {
             // All sources: iOS OAuth has a different client ID from our Mac recorder.
             let response = try await get("users/me/dataTypes/exercise/dataPoints", query: query)
             for point in response["dataPoints"] as? [[String: Any]] ?? [] {
-                if let walk = try PadStepImport.parse(JSONSerialization.data(withJSONObject: point),
-                    recorderClientID: Bundle.main.object(forInfoDictionaryKey: "PadStepsRecorderClientID") as? String ?? "",
-                    correctionPublicKey: (Bundle.main.object(forInfoDictionaryKey: "PadStepsCorrectionPublicKey") as? String).flatMap { Data(base64Encoded: $0) }) {
+                for walk in try PadStepImport.parseAll(JSONSerialization.data(withJSONObject: point), recorderClientID: Bundle.main.object(forInfoDictionaryKey: "PadStepsRecorderClientID") as? String ?? "", correctionPublicKey: (Bundle.main.object(forInfoDictionaryKey: "PadStepsCorrectionPublicKey") as? String).flatMap { Data(base64Encoded: $0) }) {
                     guard walk.userID == account else { throw ProofError.message("Workout account did not match the signed-in Google Health account.") }
                     // A local bound protects against widened API civil-time interpretations.
                     if walk.start >= start, walk.start < end, walk.end <= Date() {
-                        if let old = result[walk.id], old != walk { throw ProofError.message("Google returned conflicting copies of a walk.") }
+                        if let old = result[walk.id], old.steps != walk.steps || abs(old.start.timeIntervalSince(walk.start)) >= 0.002 || abs(old.end.timeIntervalSince(walk.end)) >= 0.002 {
+                            throw ProofError.message("Google returned conflicting measurements for a walk.")
+                        }
                         result[walk.id] = walk
                     }
                 }

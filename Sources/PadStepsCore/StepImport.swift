@@ -7,7 +7,12 @@ public struct PadStepImport: Codable, Equatable, Sendable {
     public let start: Date
     public let end: Date
     public let steps: Int
-    public var id: String { "google_\(userID)_\(resource.split(separator: "/").last!)" }
+    public var sessionID: UUID? = nil
+    public var legacyResource: String? = nil
+    public var id: String {
+        if let legacyResource { return "google_\(userID)_\(legacyResource.split(separator: "/").last!)" }
+        return sessionID.map { "pad_session_\(userID)_\($0.uuidString.lowercased())" } ?? "google_\(userID)_\(resource.split(separator: "/").last!)"
+    }
     public var syncIdentifier: String { "padsteps.\(id).steps" }
 
     public static func parse(_ data: Data, recorderClientID: String, correctionPublicKey: Data? = nil) throws -> PadStepImport? {
@@ -16,6 +21,23 @@ public struct PadStepImport: Codable, Equatable, Sendable {
         let source = raw?["dataSource"] as? [String: Any]
         let app = source?["application"] as? [String: Any]
         let exercise = raw?["exercise"] as? [String: Any]
+        if let publicKey = correctionPublicKey, let raw,
+           let receipt = MeasuredWalkReceipt.verified(point: raw, publicKey: publicKey, clientID: recorderClientID) {
+            let resource = receipt.resource == "unassigned" ? (raw["name"] as? String ?? "") : receipt.resource
+            let parts = resource.split(separator: "/")
+            guard parts.count == 6, parts[0] == "users", parts[2] == "dataTypes", parts[3] == "exercise", parts[4] == "dataPoints",
+                  !parts[1].isEmpty, parts[1].allSatisfy(\.isNumber) else { throw StepImportError.invalidRecord }
+            var imported = PadStepImport(resource: resource, userID: String(parts[1]), start: receipt.start, end: receipt.end, steps: receipt.steps)
+            imported.sessionID = receipt.sessionID
+            if let legacy = receipt.legacyResource {
+                let identity = legacy.split(separator: "/")
+                guard identity.count == 6, identity[0] == "users", identity[1] == parts[1], identity[2] == "dataTypes", identity[3] == "exercise", identity[4] == "dataPoints", !identity[5].isEmpty else { throw StepImportError.invalidRecord }
+                imported.legacyResource = legacy
+            }
+            return imported
+        }
+        // An unverified session carrier must not fall through as a legacy full walk.
+        if (exercise?["notes"] as? String ?? "").contains("PadSteps-measured-v1:") { return nil }
         if let publicKey = correctionPublicKey, let name = raw?["name"] as? String,
            let notes = exercise?["notes"] as? String,
            let proof = WorkoutCorrection.verified(note: notes, publicKey: publicKey, recorderClientID: recorderClientID, resource: name),
@@ -43,6 +65,23 @@ public struct PadStepImport: Codable, Equatable, Sendable {
             throw StepImportError.invalidRecord
         }
         return .init(resource: point.name, userID: parts[1], start: start, end: end, steps: steps)
+    }
+
+    public static func parseAll(_ data: Data, recorderClientID: String, correctionPublicKey: Data? = nil) throws -> [PadStepImport] {
+        guard let publicKey = correctionPublicKey,
+              let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let exercise = raw["exercise"] as? [String: Any] else {
+            return try parse(data, recorderClientID: recorderClientID, correctionPublicKey: correctionPublicKey).map { [$0] } ?? []
+        }
+        let receipts = MeasuredWalkReceipt.verifiedAll(point: raw, publicKey: publicKey, clientID: recorderClientID)
+        if receipts.isEmpty { return try parse(data, recorderClientID: recorderClientID, correctionPublicKey: correctionPublicKey).map { [$0] } ?? [] }
+        let notes = (exercise["notes"] as? String ?? "").split(separator: "\n").filter { $0.hasPrefix("PadSteps-measured-v1:") }
+        var imports: [PadStepImport] = []
+        for line in notes {
+            var candidate = raw; var fields = exercise; fields["notes"] = String(line); candidate["exercise"] = fields
+            if let value = try parse(JSONSerialization.data(withJSONObject: candidate), recorderClientID: recorderClientID, correctionPublicKey: publicKey), receipts.contains(where: { $0.sessionID == value.sessionID }) { imports.append(value) }
+        }
+        return imports
     }
 
     public static func date(_ value: String) -> Date? {

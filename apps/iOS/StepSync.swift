@@ -178,9 +178,21 @@ final class StepSync: ObservableObject {
                 throw ProofError.message("This phone's import journal belongs to a different Google Health account. No steps were added.")
             }
             journal.account = account; try persist()
+            var imported = 0; var adopted = 0
+            let feedURL = URL.applicationSupportDirectory.appendingPathComponent("measured-walk-feed.json")
+            if FileManager.default.fileExists(atPath: feedURL.path) {
+                guard let text = Bundle.main.object(forInfoDictionaryKey: "PadStepsCorrectionPublicKey") as? String,
+                      let key = Data(base64Encoded: text) else { throw ProofError.message("This iPhone is not paired with the Mac's measured-step feed.") }
+                let localWalks = try MeasuredWalkFeed.imports(Data(contentsOf: feedURL), publicKey: key, account: account, clientID: Bundle.main.object(forInfoDictionaryKey: "PadStepsRecorderClientID") as? String ?? "")
+                for walk in localWalks where walk.start >= journal.startedFrom && walk.end <= Date() {
+                    try Task.checkCancellation()
+                    let result = try await importSteps(walk)
+                    if result == "saved" { imported += 1 }
+                    if result == "adopted" { adopted += 1 }
+                }
+            }
             let now = Date()
             var left = max(journal.startedFrom, (journal.checkedThrough ?? journal.startedFrom).addingTimeInterval(-3 * 86400))
-            var imported = 0; var adopted = 0
             while left < now {
                 try Task.checkCancellation()
                 let right = min(now, left.addingTimeInterval(7 * 86400))

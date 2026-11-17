@@ -109,3 +109,20 @@ non-pad steps remain available.
 
 Do not delete the app, its journal or Google workouts to retry a failed sync.
 Preserve the evidence and review its state first.
+
+## Local measured-step relay
+
+Google workouts no longer serve as the required step carrier. In your ignored
+`.local/settings.json`, set `iphone_relay_device_id` to the identifier printed by
+`xcrun devicectl list devices`, then rerun `make configure` and rebuild both apps.
+Use the same generated pairing key for the Mac and iPhone. Trust this Mac and
+enable Developer Mode on the phone as required by Xcode device services.
+
+The Mac copies a signed manifest into only the configured companion's private
+container. Keep the phone connected or available through Xcode's paired wireless
+connection. A disconnected phone leaves the manifest queued for retry. Unlock
+and open PadSteps to perform an immediate Apple Health catch-up.
+
+This is a developer-tool relay. It requires Xcode on the Mac and is not an App
+Store distribution mechanism. No additional Google scope, hosted backend,
+Cloudflare account, or public health-data endpoint is needed.

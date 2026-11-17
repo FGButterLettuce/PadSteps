@@ -52,7 +52,7 @@ struct StepsCompanionView: View {
                     Button("Sync now") { Task { await sync.sync() } }
                         .frame(minHeight: 44).disabled(sync.busy || sync.connecting || sync.email == nil || !sync.authorized)
                 } header: { Text("Step sync") }
-                footer: { Text(sync.exportsMissingSteps ? "The Mac saves the full workout and heart rate to Google Health. This iPhone exports only the pad steps missing from Google's count." : "The Mac saves your workout and heart rate to Google Health. This iPhone saves only the walk's measured steps to Apple Health.") }
+                footer: { Text(sync.exportsMissingSteps ? "The Mac keeps Google's detected workouts and fills uncovered time. This iPhone receives the pad's full readings from the paired Mac and exports only steps missing from Google's count." : "The Mac saves your workout and heart rate to Google Health. This iPhone saves only the walk's measured steps to Apple Health.") }
 
                 Section {
                     if let email = sync.email {
@@ -106,6 +106,7 @@ struct StepsCompanionView: View {
                         }
                     }
                 }
+
             }
             .navigationTitle("PadSteps")
             .task {
