@@ -134,7 +134,7 @@ final class GoogleWalkReader {
                     guard walk.userID == account else { throw ProofError.message("Workout account did not match the signed-in Google Health account.") }
                     // A local bound protects against widened API civil-time interpretations.
                     if walk.start >= start, walk.start < end, walk.end <= Date() {
-                        if let old = result[walk.id], old.steps != walk.steps || abs(old.start.timeIntervalSince(walk.start)) >= 0.002 || abs(old.end.timeIntervalSince(walk.end)) >= 0.002 {
+                        if let old = result[walk.id], !old.hasSameMeasurements(as: walk) {
                             throw ProofError.message("Google returned conflicting measurements for a walk.")
                         }
                         result[walk.id] = walk

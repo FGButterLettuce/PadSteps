@@ -15,6 +15,15 @@ public struct PadStepImport: Codable, Equatable, Sendable {
     }
     public var syncIdentifier: String { "padsteps.\(id).steps" }
 
+    /// Carrier metadata can change without changing the measured pad session.
+    /// Match the HealthKit identity, counters and interval with the same timestamp
+    /// tolerance used when verifying existing HealthKit samples.
+    public func hasSameMeasurements(as other: PadStepImport) -> Bool {
+        id == other.id && userID == other.userID && steps == other.steps &&
+        abs(start.timeIntervalSince(other.start)) < 0.002 &&
+        abs(end.timeIntervalSince(other.end)) < 0.002
+    }
+
     public static func parse(_ data: Data, recorderClientID: String, correctionPublicKey: Data? = nil) throws -> PadStepImport? {
         guard !recorderClientID.isEmpty else { return nil }
         let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any]

@@ -225,7 +225,7 @@ final class StepSync: ObservableObject {
             journal.entries[walk.id]?.note = "This walk has a revised export. Its existing steps are preserved when switching export modes."
             try persist(); return "review"
         }
-        if let old, old.walk != walk {
+        if let old, !old.walk.hasSameMeasurements(as: walk) {
             journal.entries[walk.id]?.state = "review"
             journal.entries[walk.id]?.note = "Google's counters or interval changed. The existing steps were preserved."
             try persist(); return "review"
@@ -265,7 +265,7 @@ final class StepSync: ObservableObject {
 
     private func importTopUp(_ walk: PadStepImport) async throws -> String {
         let old = journal.entries[walk.id]
-        guard old == nil || old?.walk == walk else {
+        guard old == nil || old!.walk.hasSameMeasurements(as: walk) else {
             journal.entries[walk.id]?.state = "review"
             journal.entries[walk.id]?.note = "Google's pad measurements changed. The existing export was preserved."
             try persist(); return "review"
@@ -283,6 +283,7 @@ final class StepSync: ObservableObject {
             prior = StepExportLedger(steps: record.steps, version: record.version)
         }
         var entry = old ?? StepSyncEntry(walk: walk, state: "ready", note: "", checkedAt: Date(), sampleCount: 0)
+        entry.walk = walk
         entry.googleSteps = googleCount.count; entry.googleHadNoRecords = googleCount.noRecords; entry.googleCheckedAt = Date()
         let decision = StepTopUp.plan(padSteps: walk.steps, googleSteps: googleCount.count, start: walk.start, end: walk.end,
             existing: records, prior: prior, pending: old?.pendingExport,
