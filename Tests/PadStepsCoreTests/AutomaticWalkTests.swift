@@ -58,4 +58,23 @@ final class AutomaticWalkTests: XCTestCase {
                       HeartObservation(at: epoch.addingTimeInterval(2), bpm: 100), HeartObservation(at: epoch.addingTimeInterval(12), bpm: 140)]
         XCTAssertEqual(try HeartSummary.calculate(points, start: epoch, end: epoch.addingTimeInterval(12)).average, 117)
     }
+    func testDistanceResetCannotReuseAnIncompatibleIdleBaseline() {
+        var recorder = AutomaticRecorder()
+        _ = recorder.observe(PadTelemetry(steps: 0, elapsedSeconds: 0, distanceMetres: 100, motion: .idle), at: epoch)
+        _ = recorder.observe(PadTelemetry(steps: 1, elapsedSeconds: 1, speedKmh: 3, distanceMetres: 0), at: epoch.addingTimeInterval(1))
+        _ = recorder.observe(PadTelemetry(steps: 100, elapsedSeconds: 60, speedKmh: 3, distanceMetres: 200), at: epoch.addingTimeInterval(60))
+        XCTAssertEqual(recorder.active?.metres,200)
+    }
+    func testDisconnectedWalkCanBeFinishedForReviewWithoutRepeatingItsCounters() throws {
+        var recorder = AutomaticRecorder()
+        _ = recorder.observe(sample(100,60),at: epoch)
+        let id = recorder.active!.id
+        recorder.disconnected()
+        let review = try XCTUnwrap(recorder.finishForReview())
+        XCTAssertEqual(review.id,id); XCTAssertEqual(review.steps,100)
+        XCTAssertTrue(review.canConfirmRecordedTotals); XCTAssertFalse(review.needsSync)
+        XCTAssertNil(recorder.active)
+        _ = recorder.observe(sample(110,66),at: epoch.addingTimeInterval(6))
+        XCTAssertEqual(recorder.active?.steps,10,"A late reconnect must not record the already-reviewed counters twice")
+    }
 }

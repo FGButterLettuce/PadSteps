@@ -5,6 +5,7 @@ A detected interruption needs an action, not just a warning.
 | Condition | Action / outcome |
 | --- | --- |
 | Pad switched off before a confirmed stop | Review recorded totals; accept the preserved readings or enter larger final display totals. Original readings and the walk identity remain saved. |
+| Pad disconnected with a recording still open | Use Finish interrupted recording, confirm that the belt has stopped, then review totals. Reconnecting still uses the retained counter anchor. |
 | No Google walking workout | Save the recorded walk in full. |
 | Google covers part of the walk | Keep its workout and save only uncovered intervals, with Fitbit HR for those intervals. |
 | Google covers the full walk | Add no Google workout. Send measured steps independently to the iPhone. |
@@ -25,8 +26,8 @@ and daily steps are separate signals.
 
 - A cleared pad display cannot reveal unrecorded final steps. Totals confirmation
   makes that uncertainty explicit.
-- A disconnected active recording stays open for reconnection; a reset may need
-  reconnection before its recovery row appears.
+- A disconnected active recording stays open for reconnection unless explicitly
+  finished from its last reading. Unreceived final steps are never invented.
 - The relay currently requires Xcode tooling and a trusted developer-mode iPhone.
   It can copy without screen capture. iOS still controls HealthKit background
   timing; app-open catch-up is the reliable manual trigger.
@@ -37,3 +38,6 @@ and daily steps are separate signals.
   claim otherwise.
 - Core tests and real Google readback cover the exercised paths. Installation
   during the user's movie used terminal tools only; no visual QA was performed.
+
+See the [flow reliability audit](FLOW-AUDIT.md) for cancellation, outage,
+journal, pending-write and late-detection regression coverage.

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Audit the full recorder-to-phone flow: isolate sync-request cancellation,
+  prioritize new walks, guard unreadable journals, preserve authorization through
+  outages, resolve pending Google gap creates before replanning, and freeze step
+  identities before publication. Exercise the production step-write transaction
+  through crash, disk-failure and hidden-read replays.
+- Finish disconnected recordings from preserved readings with explicit totals
+  review; remove the obsolete native-workout correction path. See the
+  [flow reliability audit](docs/FLOW-AUDIT.md) for evidence and remaining limits.
 - Add optional missing-step exports for direct Google Health + PadSteps in Bevel,
   with versioned revisions, pending-write recovery and step-feedback detection.
 - Keep full-count mode as the default for existing public configurations.
@@ -11,8 +19,8 @@
 
 - Recheck pre-upload overlap reviews after an exercise is removed.
 - Compare pad steps with reconciled Google interval steps and workout summaries.
-- Review an in-place correction instead of creating a second workout; pair the
-  phone to verify measured steps on corrected native exercises.
+- Review an app-owned in-place correction instead of creating a second workout;
+  native Google/Fitbit workouts remain untouched.
 - Audit recent saved walks for later auto-detected exercises.
 - Keep uncertain attempts protected and preserve per-resource HealthKit identity.
 - Verify one recovered walk through Google and the phone: one HealthKit sample,

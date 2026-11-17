@@ -10,7 +10,7 @@ public struct MeasuredWalkFeed: Codable, Sendable {
         public let legacyResource: String?
         public init(walk: AutomaticWalk) {
             id = walk.id; start = walk.start; end = walk.exportEnd; steps = walk.steps
-            legacyResource = walk.gapExport?.legacyResource ?? (walk.gapExport == nil ? walk.resourceName : nil)
+            legacyResource = walk.stepIdentityAssigned == true ? walk.stepIdentityResource : walk.gapExport?.legacyResource ?? (walk.gapExport == nil ? walk.resourceName : nil)
         }
     }
     public let version: Int
@@ -50,4 +50,26 @@ public struct MeasuredWalkFeed: Codable, Sendable {
         return imports
     }
     private struct Envelope: Codable { let payload: Data; let signature: Data }
+}
+
+public extension AutomaticWalk {
+    var canExportMeasuredSteps: Bool {
+        guard issue == nil, stop != nil, !["recording", "empty", "localOnly"].contains(status),
+              steps > 0, steps < 100_000, seconds > 0, seconds < 86400 else { return false }
+        // An old-version create may already have reached Google without a saved
+        // response. Wait for its legacy identity instead of inventing a new one.
+        return !(gapExport == nil && uploadAttempted == true && resourceName == nil)
+    }
+    func preparingStepIdentity() -> Self {
+        guard stepIdentityAssigned != true else { return self }
+        var result = self
+        result.stepIdentityResource = gapExport?.legacyResource ?? (gapExport == nil ? resourceName : nil)
+        result.stepIdentityAssigned = true
+        return result
+    }
+    func retainingStepIdentity(from stored: Self) -> Self {
+        guard stored.stepIdentityAssigned == true else { return self }
+        var result = self; result.stepIdentityAssigned = true; result.stepIdentityResource = stored.stepIdentityResource
+        return result
+    }
 }

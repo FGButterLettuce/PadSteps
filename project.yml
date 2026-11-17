@@ -28,7 +28,6 @@ targets:
     info:
       path: .local/Mac-Info.plist
       properties:
-        PadStepsAutoCorrectMatchingWalks: ${PADSTEPS_AUTO_CORRECT_MATCHING_WALKS}
         PadStepsRelayDeviceID: ${PADSTEPS_RELAY_DEVICE_ID}
         PadStepsRelayBundleID: ${PADSTEPS_PHONE_BUNDLE_ID}
     settings:

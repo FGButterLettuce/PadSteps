@@ -11,6 +11,7 @@ ROOT_FILES = {'Package.swift', 'Package.resolved', 'Makefile', 'project.yml', 'R
               'LICENSE', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', '.gitignore', '.gitleaks.toml'}
 PRIVATE_NAMES = re.compile(r'(^|/)(\.local|\.secrets|proof-runs|captures|Walks|xcuserdata)(/|$)|(?:step-count-trial|correction-key|oauth-client|token|state|step-sync-journal|step-sync-status|health-diagnostic|health-proof).*\.json$|\.(p8|p12|mobileprovision|keychain|log)$', re.I)
 SENSITIVE = {
+    'hardcoded sign-in account': re.compile(r'(?:\bhint:|"login_hint"\s*:)\s*"[^"\s]+@[^"\s]+"'),
     'paired correction private key': re.compile(r'"privateKey"\s*:\s*"[A-Za-z0-9+/]{40,}={0,2}"'),
     'private key': re.compile(r'-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----'),
     'OAuth refresh token': re.compile(r'1//[A-Za-z0-9_-]{25,}'),

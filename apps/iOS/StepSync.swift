@@ -15,16 +15,24 @@ struct StepSyncEntry: Codable, Identifiable {
     var googleSteps: Int?
     var googleHadNoRecords: Bool?
     var googleCheckedAt: Date?
+    var lastAttemptAt: Date?
     var id: String { walk.id }
 }
 
 struct StepSyncJournal: Codable {
+    var schemaVersion: Int? = 1
     var startedFrom = Calendar.current.startOfDay(for: Date())
     var checkedThrough: Date?
     var account: String?
     var automatic = true
     var topUpPolicyVersion: Int?
     var entries: [String: StepSyncEntry] = [:]
+    var isSupported: Bool {
+        (schemaVersion ?? 1) == 1 && (topUpPolicyVersion ?? 1) == 1 && entries.allSatisfy { key, entry in
+            ["ready", "attempted", "confirmed", "covered", "review", "trial"].contains(entry.state) &&
+            entry.walk.isValidMeasurement && key == entry.walk.id && (account == nil || entry.walk.userID == account)
+        }
+    }
 }
 
 @MainActor
@@ -47,9 +55,21 @@ final class StepSync: ObservableObject {
     private let google = GoogleWalkReader()
     private var observers: [String: HKObserverQuery] = [:]
     private var backgroundTypes: [String] = []
-    private var activeTask: Task<Void, Never>?
+    private var forceNextPass = false
+    private lazy var syncRun = SharedSyncRun { [weak self] in
+        guard let self else { return }
+        self.busy = true
+        defer { self.busy = false; self.diagnostic() }
+        for pass in 0..<2 {
+            self.followUp = false
+            let force = self.forceNextPass; self.forceNextPass = false
+            await self.performSync(force: force)
+            if !self.followUp || Task.isCancelled || pass == 1 { break }
+        }
+    }
     private var followUp = false
-    private var journalHealthy = true
+    private let journalFile: JournalFile<StepSyncJournal>
+    private var journalHealthy: Bool { journalFile.readable }
     private var started = false
     private let journalURL = URL.applicationSupportDirectory.appendingPathComponent("step-sync-journal.json")
     private let diagnosticURL = URL.applicationSupportDirectory.appendingPathComponent("step-sync-status.json")
@@ -65,19 +85,17 @@ final class StepSync: ObservableObject {
     }
 
     private init() {
-        if FileManager.default.fileExists(atPath: journalURL.path) {
-            do { journal = try JSONDecoder().decode(StepSyncJournal.self, from: Data(contentsOf: journalURL)) }
-            catch {
-                journal = StepSyncJournal(); journalHealthy = false
-                problem = "The saved import journal could not be read. Sync is paused to protect existing steps."
-            }
-        } else { journal = StepSyncJournal() }
+        let store = JournalFile(url: URL.applicationSupportDirectory.appendingPathComponent("step-sync-journal.json"), fresh: StepSyncJournal(),
+            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication], validate: { $0.isSupported })
+        journalFile = store; journal = store.initialValue
+        if !store.readable { problem = JournalFileError.unreadable.localizedDescription }
         authorized = health.authorizationStatus(for: steps) == .sharingAuthorized
     }
 
     func start() {
         guard !started else { return }
         started = true
+        guard journalHealthy else { diagnostic(); return }
         if exportsMissingSteps, journal.topUpPolicyVersion != 1 {
             // Resume a controlled trial only after the user-selected missing-step mode is installed.
             if journal.entries.values.contains(where: { $0.state == "trial" }) { journal.automatic = true }
@@ -89,7 +107,10 @@ final class StepSync: ObservableObject {
         Task {
             try? await google.restore()
             email = google.email
-            if journal.automatic { await enableDelivery(); await sync() }
+            if journal.automatic {
+                await enableDelivery()
+                if UIApplication.shared.applicationState == .active { await sync() }
+            }
         }
     }
 
@@ -122,49 +143,41 @@ final class StepSync: ObservableObject {
     }
 
     func setAutomatic(_ enabled: Bool) {
+        guard journalHealthy else { problem = JournalFileError.unreadable.localizedDescription; return }
         journal.automatic = enabled
+        if !enabled { syncRun.cancelAll(); BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskID) }
         do { try persist() }
         catch { problem = error.localizedDescription; return }
         if enabled {
             schedule(); Task { await enableDelivery(); await sync() }
         } else {
-            activeTask?.cancel()
+            syncRun.cancelAll()
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.taskID)
-            Task { for type in observedTypes { try? await health.disableBackgroundDelivery(for: type) } }
+            Task {
+                for type in observedTypes { try? await health.disableBackgroundDelivery(for: type) }
+                if journal.automatic { await enableDelivery() }
+            }
         }
     }
 
     func foreground() {
+        if let restored = journalFile.reloadIfAvailable() { journal = restored; problem = nil; started = false; start() }
         authorized = health.authorizationStatus(for: steps) == .sharingAuthorized
         if journal.automatic {
             registerObserver()
             schedule()
-            Task { await enableDelivery(); await sync() }
+            Task { await enableDelivery(); await sync(force: true) }
         }
     }
 
-    func sync() async {
-        guard !connecting else { return }
-        if let activeTask {
-            followUp = true
-            await withTaskCancellationHandler { await activeTask.value } onCancel: { activeTask.cancel() }
-            return
-        }
-        let task = Task { [weak self] in
-            guard let self else { return }
-            self.busy = true
-            defer { self.busy = false; self.activeTask = nil; self.diagnostic() }
-            for pass in 0..<2 {
-                self.followUp = false
-                await self.performSync()
-                if !self.followUp || Task.isCancelled || pass == 1 { break }
-            }
-        }
-        activeTask = task
-        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    @discardableResult func sync(force: Bool = false) async -> Bool {
+        guard !connecting else { return false }
+        if force { forceNextPass = true }
+        if syncRun.isRunning { followUp = true }
+        return await syncRun.run()
     }
 
-    private func performSync() async {
+    private func performSync(force: Bool) async {
         guard journalHealthy else { return }
         guard !isSimulator else { status = "Connect your iPhone to sync real steps."; return }
         guard authorized else { status = "Enable Apple Health to save measured steps."; return }
@@ -177,44 +190,57 @@ final class StepSync: ObservableObject {
             if let bound = journal.account, bound != account {
                 throw ProofError.message("This phone's import journal belongs to a different Google Health account. No steps were added.")
             }
+            guard journal.entries.values.allSatisfy({ $0.walk.userID == account }) else {
+                throw ProofError.message("Saved step records belong to a different Google Health account. No steps were changed.")
+            }
             journal.account = account; try persist()
             var imported = 0; var adopted = 0
+            let now = Date()
+            var candidates: [String: PadStepImport] = [:]
             let feedURL = URL.applicationSupportDirectory.appendingPathComponent("measured-walk-feed.json")
             if FileManager.default.fileExists(atPath: feedURL.path) {
                 guard let text = Bundle.main.object(forInfoDictionaryKey: "PadStepsCorrectionPublicKey") as? String,
                       let key = Data(base64Encoded: text) else { throw ProofError.message("This iPhone is not paired with the Mac's measured-step feed.") }
                 let localWalks = try MeasuredWalkFeed.imports(Data(contentsOf: feedURL), publicKey: key, account: account, clientID: Bundle.main.object(forInfoDictionaryKey: "PadStepsRecorderClientID") as? String ?? "")
-                for walk in localWalks where walk.start >= journal.startedFrom && walk.end <= Date() {
-                    try Task.checkCancellation()
-                    let result = try await importSteps(walk)
-                    if result == "saved" { imported += 1 }
-                    if result == "adopted" { adopted += 1 }
-                }
+                for walk in localWalks where walk.start >= journal.startedFrom && walk.end <= now { candidates[walk.id] = walk }
+            } else {
+                // Legacy fallback. A verified local feed is the authoritative full
+                // measurement source, so do not also process its workout carriers.
+                let left = max(journal.startedFrom, now.addingTimeInterval(-3 * 86400))
+                for walk in try await google.walks(from: left, to: now, account: account) { candidates[walk.id] = walk }
+                journal.checkedThrough = now; try persist()
             }
-            let now = Date()
-            var left = max(journal.startedFrom, (journal.checkedThrough ?? journal.startedFrom).addingTimeInterval(-3 * 86400))
-            while left < now {
+            // An interrupted write must remain recoverable even if its source
+            // workout or old feed entry is no longer returned.
+            for entry in journal.entries.values where entry.pendingExport != nil || entry.state == "attempted" {
+                if candidates[entry.id] == nil { candidates[entry.id] = entry.walk }
+            }
+            let checks = candidates.values.map { walk in
+                let old = journal.entries[walk.id]
+                return StepCheckCandidate(walk: walk, state: old?.state, checkedAt: old?.checkedAt,
+                    attemptedAt: old?.lastAttemptAt, hasPendingWrite: old?.pendingExport != nil,
+                    measurementsChanged: old.map { !$0.walk.hasSameMeasurements(as: walk) } ?? false)
+            }
+            for walk in StepCheckSchedule.due(checks, now: now, force: force) {
                 try Task.checkCancellation()
-                let right = min(now, left.addingTimeInterval(7 * 86400))
-                let walks = try await google.walks(from: left, to: right, account: account)
-                for walk in walks {
-                    try Task.checkCancellation()
-                    let result = try await importSteps(walk)
-                    if result == "saved" { imported += 1 }
-                    if result == "adopted" { adopted += 1 }
-                }
-                journal.checkedThrough = right; try persist()
-                left = right
+                var attempt = journal.entries[walk.id] ?? StepSyncEntry(walk: walk, state: "ready", note: "Waiting for the initial step check.", checkedAt: .distantPast, sampleCount: 0)
+                attempt.lastAttemptAt = Date(); journal.entries[walk.id] = attempt; try persist()
+                let result = try await importSteps(walk)
+                if result == "saved" { imported += 1 }
+                if result == "adopted" { adopted += 1 }
             }
             dailySteps = try await mergedDailySteps()
             workoutsReadable = try await readableWorkoutCount()
             lastChecked = Date()
-            status = imported > 0 ? "Saved \(imported) walk's steps to Apple Health." : (adopted > 0 ? "Existing steps verified. No extra copies added." : "Up to date. Waiting for the next PadSteps Google workout.")
+            status = imported > 0 ? "Saved \(imported) walk's steps to Apple Health." : (adopted > 0 ? "Existing steps verified. No extra copies added." : "Up to date. Waiting for the next measured walk from your Mac.")
             if entries.contains(where: { $0.state == "review" }) {
                 problem = "A walk needs review. Its steps were not added again."
             }
         } catch is CancellationError { status = "Sync paused. It will retry on the next background check or app open." }
-        catch { problem = error.localizedDescription }
+        catch {
+            problem = error.localizedDescription
+            status = journal.automatic ? "Check incomplete. Saved steps are preserved; automatic checks will retry." : "Check incomplete. Saved steps are preserved; tap Sync now to retry."
+        }
     }
 
     private func importSteps(_ walk: PadStepImport) async throws -> String {
@@ -271,7 +297,7 @@ final class StepSync: ObservableObject {
             try persist(); return "review"
         }
         let googleCount = try await google.recordedSteps(for: walk)
-        let samples = try await ownSamples(walk)
+        var samples = try await ownSamples(walk)
         let records = samples.map { VersionedStepRecord(start: $0.startDate, end: $0.endDate,
             steps: Int($0.quantity.doubleValue(for: .count()).rounded()),
             version: ($0.metadata?[HKMetadataKeySyncVersion] as? NSNumber)?.intValue ?? 0) }
@@ -285,61 +311,54 @@ final class StepSync: ObservableObject {
         var entry = old ?? StepSyncEntry(walk: walk, state: "ready", note: "", checkedAt: Date(), sampleCount: 0)
         entry.walk = walk
         entry.googleSteps = googleCount.count; entry.googleHadNoRecords = googleCount.noRecords; entry.googleCheckedAt = Date()
-        let decision = StepTopUp.plan(padSteps: walk.steps, googleSteps: googleCount.count, start: walk.start, end: walk.end,
-            existing: records, prior: prior, pending: old?.pendingExport,
-            legacyConfirmed: old != nil && ["confirmed", "review", "trial", "attempted"].contains(old!.state))
-        var completed: StepExportLedger?
-        var wrote = false
-        switch decision {
+        var firstRead = true
+        let outcome = try await StepExportTransaction.perform(walk: walk, googleSteps: googleCount.count,
+            prior: prior, pending: old?.pendingExport,
+            legacyConfirmed: old.map { ["confirmed", "review", "trial", "attempted"].contains($0.state) } ?? false,
+            read: {
+                if firstRead { firstRead = false } else { samples = try await self.ownSamples(walk) }
+                return samples.map { VersionedStepRecord(start: $0.startDate, end: $0.endDate,
+                    steps: Int($0.quantity.doubleValue(for: .count()).rounded()),
+                    version: ($0.metadata?[HKMetadataKeySyncVersion] as? NSNumber)?.intValue ?? 0) }
+            }, write: { count, version in
+                guard self.health.authorizationStatus(for: self.steps) == .sharingAuthorized else {
+                    throw ProofError.message("Steps write access was disabled. Enable it in Apple Health.")
+                }
+                var metadata = samples.first?.metadata ?? [:]
+                metadata[HKMetadataKeySyncIdentifier] = walk.syncIdentifier; metadata[HKMetadataKeySyncVersion] = version
+                metadata[HKMetadataKeyTimeZone] = TimeZone.current.identifier
+                metadata["PadStepsMeasuredSteps"] = walk.steps; metadata["PadStepsGoogleSteps"] = googleCount.count
+                metadata["PadStepsExportMode"] = "missing-google"; metadata.removeValue(forKey: "PadStepsTrialID")
+                let device = samples.first?.device ?? HKDevice(name: "Sperax P2 Max", manufacturer: "Sperax", model: "P2 Max",
+                    hardwareVersion: nil, firmwareVersion: nil, softwareVersion: nil, localIdentifier: nil, udiDeviceIdentifier: nil)
+                let sample = HKQuantitySample(type: self.steps, quantity: .init(unit: .count(), doubleValue: Double(count)),
+                    start: walk.start, end: walk.end, device: device, metadata: metadata)
+                try await self.health.save(sample)
+            }, remove: {
+                guard samples.count == 1, let sample = samples.first else { throw ProofError.message("The redundant top-up could not be identified safely.") }
+                try await self.health.delete(sample)
+            }, persistIntent: { intent in
+                entry.pendingExport = intent; entry.state = "attempted"
+                entry.note = intent.steps == 0 ? "Google now covers the walk; removing only this app's redundant top-up." : "Updating the same step record to the measured shortfall."
+                self.journal.entries[walk.id] = entry; try self.persist()
+            })
+        let completed: StepExportLedger
+        let wrote: Bool
+        switch outcome {
         case .review(let reason):
             entry.state = "review"; entry.note = reason
             journal.entries[walk.id] = entry; try persist(); return "review"
-        case .adopt(let count, let version): completed = .init(steps: count, version: version)
-        case .covered(let version): completed = .init(steps: 0, version: version)
-        case .save(let count, let version):
-            let previous = records.first.map { StepExportLedger(steps: $0.steps, version: $0.version) } ?? prior
-            entry.pendingExport = entry.pendingExport ?? .init(previous: previous, steps: count, version: version)
-            entry.state = "attempted"; entry.note = "Updating the same step record to the measured shortfall."
-            journal.entries[walk.id] = entry; try persist()
-            try Task.checkCancellation()
-            var metadata = samples.first?.metadata ?? [:]
-            metadata[HKMetadataKeySyncIdentifier] = walk.syncIdentifier; metadata[HKMetadataKeySyncVersion] = version
-            metadata[HKMetadataKeyTimeZone] = TimeZone.current.identifier
-            metadata["PadStepsMeasuredSteps"] = walk.steps; metadata["PadStepsGoogleSteps"] = googleCount.count
-            metadata["PadStepsExportMode"] = "missing-google"; metadata.removeValue(forKey: "PadStepsTrialID")
-            let device = samples.first?.device ?? HKDevice(name: "Sperax P2 Max", manufacturer: "Sperax", model: "P2 Max",
-                hardwareVersion: nil, firmwareVersion: nil, softwareVersion: nil, localIdentifier: nil, udiDeviceIdentifier: nil)
-            let sample = HKQuantitySample(type: steps, quantity: .init(unit: .count(), doubleValue: Double(count)),
-                start: walk.start, end: walk.end, device: device, metadata: metadata)
-            try await health.save(sample)
-            entry.pendingExport?.writeAcknowledged = true; journal.entries[walk.id] = entry; try persist()
-            let found = try await ownSamples(walk)
-            guard found.count == 1, let saved = found.first,
-                  Int(saved.quantity.doubleValue(for: .count()).rounded()) == count,
-                  (saved.metadata?[HKMetadataKeySyncVersion] as? NSNumber)?.intValue == version else {
-                throw ProofError.message("The step update was submitted but one-copy readback is not confirmed. No second identity was created.")
-            }
-            completed = .init(steps: count, version: version); wrote = true
-        case .remove(let version):
-            guard let sample = samples.first, samples.count == 1, let record = records.first else {
-                throw ProofError.message("The redundant top-up could not be identified safely.")
-            }
-            entry.pendingExport = entry.pendingExport ?? .init(previous: .init(steps: record.steps, version: record.version), steps: 0, version: version)
-            entry.state = "attempted"; entry.note = "Google now covers the walk; removing only this app's redundant top-up."
-            journal.entries[walk.id] = entry; try persist()
-            try await health.delete(sample)
-            entry.pendingExport?.writeAcknowledged = true; journal.entries[walk.id] = entry; try persist()
-            guard try await ownSamples(walk).isEmpty else { throw ProofError.message("Top-up removal is not yet confirmed.") }
-            completed = .init(steps: 0, version: version); wrote = true
+        case .complete(let ledger, let changed): completed = ledger; wrote = changed
         }
-        guard let completed else { throw ProofError.message("The step update did not finish.") }
         entry.exported = completed; entry.pendingExport = nil; entry.checkedAt = Date()
         entry.sampleCount = completed.steps == 0 ? 0 : 1; entry.state = completed.steps == 0 ? "covered" : "confirmed"
         entry.note = "\(walk.steps) pad − \(googleCount.count) Google = \(max(0, walk.steps - googleCount.count)) missing; \(completed.steps) exported."
         if googleCount.noRecords { entry.note += " Google has no step records yet; later syncs recheck this count." }
         if googleCount.count > walk.steps { entry.note += " Google's count exceeds the pad; no negative correction was invented." }
+        if completed.steps != max(0, walk.steps - googleCount.count) {
+            entry.checkedAt = .distantPast; entry.lastAttemptAt = nil; followUp = true
+        }
         journal.entries[walk.id] = entry; try persist()
-        if completed.steps != max(0, walk.steps - googleCount.count) { followUp = true }
         return wrote ? "saved" : "adopted"
     }
 
@@ -380,8 +399,8 @@ final class StepSync: ObservableObject {
     }
 
     private func persist() throws {
-        try FileManager.default.createDirectory(at: journalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(journal).write(to: journalURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        journal.schemaVersion = 1
+        try journalFile.save(journal)
         objectWillChange.send()
     }
 
@@ -420,12 +439,13 @@ final class StepSync: ObservableObject {
                     guard let self else { return }
                     guard error == nil else { self.health.stop(query); self.observers[identifier] = nil; return }
                     guard self.journal.automatic else { return }
+                    let work = Task { await self.sync() }
                     let deadline = Task { @MainActor in
                         try? await Task.sleep(for: .seconds(25))
-                        if !Task.isCancelled { self.activeTask?.cancel() }
+                        if !Task.isCancelled { work.cancel() }
                     }
                     defer { deadline.cancel() }
-                    await self.sync()
+                    _ = await work.value
                 }
             }
             observers[identifier] = query; health.execute(query)
@@ -439,6 +459,7 @@ final class StepSync: ObservableObject {
             do {
                 let frequency: HKUpdateFrequency = type.identifier == steps.identifier ? .hourly : .immediate
                 try await health.enableBackgroundDelivery(for: type, frequency: frequency)
+                if !journal.automatic { try? await health.disableBackgroundDelivery(for: type); continue }
                 backgroundTypes.append(type.identifier)
             } catch { continue }
         }
@@ -459,7 +480,7 @@ final class StepSync: ObservableObject {
     func handle(_ task: BGAppRefreshTask) {
         guard journal.automatic else { task.setTaskCompleted(success: true); return }
         schedule()
-        let work = Task { await sync(); task.setTaskCompleted(success: !Task.isCancelled && problem == nil) }
+        let work = Task { let completed = await sync(); task.setTaskCompleted(success: completed && !Task.isCancelled && problem == nil) }
         task.expirationHandler = { work.cancel() }
     }
 }

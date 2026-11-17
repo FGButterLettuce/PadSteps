@@ -39,9 +39,20 @@ public struct WorkoutGapExport: Codable, Sendable {
     public var legacyResource: String?
     public var creationStarted: [String: Bool]?
     public var rejectedCreations: [String]?
+    public var pendingRanges: [String: WorkoutTimeRange]?
+    public var retryAfter: [String: Date]?
+    public func retryingDueCreations(at now: Date) -> Self {
+        let due = (rejectedCreations ?? []).filter { retryAfter?[$0].map { $0 <= now } == true }
+        var result = self
+        for name in due { result.creationStarted?[name] = false; result.operations?[name] = nil; result.retryAfter?[name] = nil }
+        result.rejectedCreations = (rejectedCreations ?? []).filter { !due.contains($0) }
+        return result
+    }
     public func retryingRejectedCreations() -> Self {
         var result = self
-        for name in rejectedCreations ?? [] { result.creationStarted?[name] = false; result.operations?[name] = nil }
+        for name in rejectedCreations ?? [] {
+            result.creationStarted?[name] = false; result.operations?[name] = nil; result.retryAfter?[name] = nil
+        }
         result.rejectedCreations = []
         return result
     }

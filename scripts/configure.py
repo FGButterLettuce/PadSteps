@@ -73,9 +73,6 @@ def main():
         public_key = key_data['publicKey']
         shutil.copyfile(key_file, signing_resource)
         os.chmod(signing_resource, 0o600)
-    auto_correct = settings.get('auto_correct_matching_workouts', False)
-    if not isinstance(auto_correct, bool):
-        raise SystemExit('auto_correct_matching_workouts must be true or false.')
     relay_device = settings.get('iphone_relay_device_id', '')
     if not isinstance(relay_device, str) or (relay_device and not re.fullmatch(r'[A-Za-z0-9-]{8,64}', relay_device)):
         raise SystemExit('iphone_relay_device_id must be a paired-device identifier from devicectl.')
@@ -94,7 +91,6 @@ def main():
         'PADSTEPS_CORRECTION_PUBLIC_KEY': public_key,
         'PADSTEPS_STEP_EXPORT_MODE': export_mode,
         # Native Fitbit records are owned by Fitbit; new recordings fill gaps.
-        'PADSTEPS_AUTO_CORRECT_MATCHING_WALKS': 'NO',
         'PADSTEPS_RELAY_DEVICE_ID': relay_device,
     })
     subprocess.run(['xcodegen', 'generate', '--spec', 'project.yml'], cwd=ROOT, env=env, check=True)

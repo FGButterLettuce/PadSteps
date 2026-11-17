@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Network
 import Security
+import PadStepsCore
 
 enum PadError: LocalizedError {
     case message(String)
@@ -10,7 +11,13 @@ enum PadError: LocalizedError {
 
 struct GoogleHTTPError: LocalizedError {
     let status: Int
+    var isTransient: Bool { status == 429 || status >= 500 }
     var errorDescription: String? { "Google Health returned HTTP \(status). Your walk is preserved locally." }
+}
+
+struct GoogleRefreshUnavailable: LocalizedError {
+    let status: Int
+    var errorDescription: String? { "Google could not refresh access right now (HTTP \(status)). Existing authorization is retained; queued walks retry automatically." }
 }
 
 @MainActor
@@ -35,6 +42,8 @@ final class GoogleConnection: ObservableObject {
     var clientID: String { client["client_id"] ?? "" }
     private var refreshTask: Task<Token, Error>?
     private var listenerReady = false
+    private var retryKeychain = true
+    private var lastKeychainAttempt = Date.distantPast
     let storage: URL
 
     init(storage: URL) {
@@ -46,14 +55,28 @@ final class GoogleConnection: ObservableObject {
             client["client_id"] = installed["client_id"] as? String
             client["client_secret"] = installed["client_secret"] as? String
         }
+        restoreIfAvailable(force: true)
+    }
+
+    func restoreIfAvailable(force: Bool = false) {
+        guard retryKeychain, authorizationURL == nil,
+              force || Date().timeIntervalSince(lastKeychainAttempt) >= 30 else { return }
+        lastKeychainAttempt = Date()
         var result: CFTypeRef?
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                   kSecAttrService as String: service, kSecAttrAccount as String: "oauth",
-                                  kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        if SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+                                  kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne,
+                                  kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess,
            let data = result as? Data, let saved = try? JSONDecoder().decode(Token.self, from: data) {
             token = saved; connected = !saved.refresh.isEmpty
+            retryKeychain = false
             if connected { message = "Google Health connected" }
+        } else if [errSecInteractionNotAllowed, errSecNotAvailable].contains(status) {
+            message = "Waiting for this Mac to unlock before restoring Google access."
+        } else {
+            retryKeychain = false
         }
     }
 
@@ -70,7 +93,8 @@ final class GoogleConnection: ObservableObject {
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw PadError.message("Couldn’t save Google access in Keychain (\(status)).") }
-        self.token = token; connected = true
+        self.token = token; connected = true; retryKeychain = false
+        if authorizationURL == nil { message = "Google Health connected • automatic saves enabled" }
     }
 
     private func random() throws -> String {
@@ -182,14 +206,19 @@ final class GoogleConnection: ObservableObject {
         var all = fields; all["client_id"] = client["client_id"]; all["client_secret"] = client["client_secret"]
         var components = URLComponents(); components.queryItems = all.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
+        request.timeoutInterval = 30
         request.httpMethod = "POST"; request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data((components.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            connected = false
-            message = "Google access expired or was revoked. Reconnect to resume automatic saves."
-            throw PadError.message("Google access expired or was revoked. Reconnect Google Health; saved walks will stay queued.")
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard status == 200, let json else {
+            if fields["grant_type"] == "refresh_token", OAuthRecovery.requiresReconnect(status: status, error: json?["error"] as? String) {
+                connected = false; retryKeychain = false
+                message = "Google authorization was rejected. Reconnect to resume automatic saves."
+                throw PadError.message("Reconnect Google Health to restore access. Saved walks remain queued.")
+            }
+            throw GoogleRefreshUnavailable(status: status)
         }
         return json
     }

@@ -52,7 +52,33 @@ extension PadMonitor {
     }
 
     func syncGapExport(walk: inout AutomaticWalk) async throws {
-        let all = try await workouts(near: walk)
+        var all = try await workouts(near: walk)
+        if var pending = walk.gapExport {
+            for name in pending.resources + pending.retiredResources where WorkoutGapExport.isPendingResource(name) && pending.creationStarted?[name] == true {
+                if let operationName = pending.operations?[name] {
+                    do {
+                        let operation = try await google.request("GET", operationName)
+                        if operation["done"] as? Bool == true, operation["error"] != nil {
+                            pending.rejectedCreations = Array(Set((pending.rejectedCreations ?? []) + [name]))
+                            if let failure = operation["error"] as? [String: Any], let code = failure["code"] as? Int, [8,14].contains(code), pending.retryAfter?[name] == nil {
+                                var retry = pending.retryAfter ?? [:]; retry[name] = Date().addingTimeInterval(60); pending.retryAfter = retry
+                            }
+                        }
+                        if let response = operation["response"] as? [String: Any], let assigned = response["name"] as? String,
+                           !all.contains(where: { $0["name"] as? String == assigned }), let point = try await pointIfPresent(assigned) { all.append(point) }
+                    } catch let error as GoogleHTTPError where error.status == 404 {
+                        // Expired operation is not evidence of a failed write.
+                    }
+                }
+            }
+            pending = pending.retryingDueCreations(at: Date())
+            walk.gapExport = pending; try update(walk)
+            let candidates = all.compactMap { point -> OwnedGapCandidate? in
+                guard ownGap(point, walk: walk), let resource = point["name"] as? String, let range = timeRange(point) else { return nil }
+                return .init(resource: resource, range: range)
+            }
+            walk.gapExport = try pending.resolvingCreations(candidates: candidates); try update(walk)
+        }
         let ownedNames = Set((walk.gapExport?.resources ?? []) + (walk.gapExport?.retiredResources ?? []))
         let existing = all.filter { point in
             guard let name = point["name"] as? String else { return false }
@@ -67,16 +93,12 @@ extension PadMonitor {
         let gaps = WorkoutCoverage.missing(in: .init(start: walk.start, end: walk.exportEnd), covered: walking.compactMap(timeRange))
         let user = state.healthUserID ?? ""
         guard !user.isEmpty else { throw PadError.message("Google account identity is not available yet.") }
-        var plan = walk.gapExport ?? .init(gaps: gaps)
-        let oldResources = plan.resources
-        let desiredNames = gaps.indices.map { index in
-            index < oldResources.count ? oldResources[index] : "users/\(user)/dataTypes/exercise/dataPoints/padsteps-\(walk.id.uuidString.lowercased())-\(index)"
-        }
-        plan.retiredResources = Array(Set(plan.retiredResources + oldResources.filter { !desiredNames.contains($0) })).sorted()
-        if walk.gapExport == nil || plan.gaps != gaps { walk.status = "verifying"; walk.reviewKind = "coverageExport" }
-        plan.gaps = gaps; plan.resources = desiredNames
+        let original = walk.gapExport ?? .init(gaps: [])
+        let plan = try original.replacingCoverage(gaps, makePending: { "users/\(user)/dataTypes/exercise/dataPoints/padsteps-\(UUID().uuidString.lowercased())" })
+        if walk.gapExport == nil || original.gaps != gaps { walk.status = "verifying"; walk.reviewKind = "coverageExport" }
         walk.gapExport = plan; try update(walk)
         _ = try writeWalkFeed()
+        if let stored = state.walks.first(where: { $0.id == walk.id }) { walk = walk.retainingStepIdentity(from: stored) }
 
         var heart: [HeartObservation]?
         for (index, gap) in gaps.enumerated() {
@@ -144,11 +166,17 @@ extension PadMonitor {
             if found == nil {
                 body.removeValue(forKey: "name")
                 var started = walk.gapExport?.creationStarted ?? [:]; started[name] = true
-                walk.gapExport?.creationStarted = started; try update(walk)
+                var ranges = walk.gapExport?.pendingRanges ?? [:]; ranges[name] = gap
+                walk.gapExport?.creationStarted = started; walk.gapExport?.pendingRanges = ranges; try update(walk)
                 do { operation = try await google.request("POST", "users/me/dataTypes/exercise/dataPoints", body: body) }
-                catch let error as GoogleHTTPError where [400, 403, 422].contains(error.status) {
+                catch let error as GoogleHTTPError where [400, 403, 422, 429].contains(error.status) {
                     let rejected = Array(Set((walk.gapExport?.rejectedCreations ?? []) + [name]))
-                    walk.gapExport?.rejectedCreations = rejected; try update(walk); throw error
+                    walk.gapExport?.rejectedCreations = rejected
+                    if error.status == 429 {
+                        var retry = walk.gapExport?.retryAfter ?? [:]; retry[name] = Date().addingTimeInterval(60)
+                        walk.gapExport?.retryAfter = retry
+                    }
+                    try update(walk); throw error
                 }
             } else {
                 var patch = body; patch.removeValue(forKey: "dataSource")
@@ -164,6 +192,10 @@ extension PadMonitor {
                 if provisional {
                     let rejected = Array(Set((walk.gapExport?.rejectedCreations ?? []) + [name]))
                     walk.gapExport?.rejectedCreations = rejected; try update(walk)
+                    if let failure = operation["error"] as? [String: Any], let code = failure["code"] as? Int, [8,14].contains(code) {
+                        var retry = walk.gapExport?.retryAfter ?? [:]; retry[name] = Date().addingTimeInterval(60)
+                        walk.gapExport?.retryAfter = retry; try update(walk)
+                    }
                 }
                 throw error
             }

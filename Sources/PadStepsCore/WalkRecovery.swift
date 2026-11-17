@@ -28,7 +28,7 @@ public extension AutomaticWalk {
     var recordedTotals: RecordedWalkTotals { .init(steps: steps, seconds: seconds, metres: metres, end: exportEnd) }
     var canConfirmRecordedTotals: Bool {
         status == "review" && hasNeverUploaded && steps > 0 && seconds > 0 &&
-        (reviewKind == "counterReset" || issue == "Pad counters reset before a confirmed stop. This walk needs review.")
+        (["counterReset", "interruptedRecording"].contains(reviewKind ?? "") || issue == "Pad counters reset before a confirmed stop. This walk needs review.")
     }
     var canSaveWithoutHeartRate: Bool { status == "waitingHeartRate" && issue == nil && (hasNeverUploaded || gapExport != nil) }
     var canCheckUpload: Bool {

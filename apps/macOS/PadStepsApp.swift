@@ -45,6 +45,7 @@ struct DesktopView: View {
     @ObservedObject var google: GoogleConnection
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var settingsError: String?
+    @State private var finishingInterruptedWalk = false
 
     var body: some View {
         ScrollView {
@@ -68,6 +69,9 @@ struct DesktopView: View {
                             GridRow { Text("Pad time"); Text(duration(walk.seconds)).monospacedDigit() }
                             GridRow { Text("Heart rate"); Text("Added after you stop").foregroundStyle(.secondary) }
                         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        if !monitor.linked {
+                            Button("Finish interrupted recording…") { finishingInterruptedWalk = true }
+                        }
                     }
                 }
 
@@ -166,6 +170,12 @@ struct DesktopView: View {
         }
         .frame(minWidth: 540, minHeight: 520)
         .toolbar { ToolbarItem { Label("PadSteps", systemImage: "figure.walk").foregroundStyle(.secondary) } }
+        .alert("Has the pad stopped?", isPresented: $finishingInterruptedWalk) {
+            Button("Review last readings") { monitor.finishInterruptedRecording() }
+            Button("Keep recording", role: .cancel) {}
+        } message: {
+            Text("Use this only after stopping the pad. Its last received readings will be preserved for totals review. This action does not control the belt.")
+        }
     }
 
     private func status(_ walk: AutomaticWalk) -> String {
@@ -320,7 +330,7 @@ private struct OverlapReviewView: View {
                                 Text("\(conflict.source) · \(conflict.type.replacingOccurrences(of: "_", with: " ").capitalized)").font(.headline)
                                 Text("\(conflict.start.formatted(date: .omitted, time: .standard)) – \(conflict.end.formatted(date: .omitted, time: .standard)) · \(conflict.steps.map { "\($0.formatted()) workout steps" } ?? "Workout steps unknown")")
                                     .monospacedDigit().textSelection(.enabled)
-                                if (walk.canRecheckOverlap || walk.correctionTarget == conflict.id || (walk.reviewKind == "savedMismatch" && walk.resourceName == conflict.id)), report.workouts.count == 1, conflict.coversSameWalk(walk), walk.averageBPM != nil {
+                                if walk.gapExport == nil, conflict.isOwned(by: monitor.google.clientID), (walk.canRecheckOverlap || walk.correctionTarget == conflict.id || (walk.reviewKind == "savedMismatch" && walk.resourceName == conflict.id)), report.workouts.count == 1, conflict.coversSameWalk(walk), walk.averageBPM != nil {
                                     Button(walk.canReviewCorrection ? "Retry using pad totals…" : "Use pad totals for this workout…") { correction = conflict }.disabled(disabled)
                                 } else {
                                     Text("This is a partial, different, or multiple-workout overlap. Resolve it in Google Health, then Check again; whole-walk pad totals cannot be applied safely here.")

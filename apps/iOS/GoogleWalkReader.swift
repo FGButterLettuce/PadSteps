@@ -30,7 +30,7 @@ final class GoogleWalkReader {
         }
         while let presented = controller.presentedViewController { controller = presented }
         _ = try await GIDSignIn.sharedInstance.signIn(withPresenting: controller,
-             hint: "nirusgameid@gmail.com", additionalScopes: [Self.scope])
+             hint: nil, additionalScopes: [Self.scope])
     }
 
     func get(_ path: String, query: [URLQueryItem] = []) async throws -> [String: Any] {
@@ -58,7 +58,13 @@ final class GoogleWalkReader {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw ProofError.message("Google Health read failed (\(code)). Retry syncing; reconnect Google if access was revoked.")
+            if code == 429 || code >= 500 {
+                throw ProofError.message("Google Health is temporarily unavailable (\(code)). Saved steps are preserved; syncing can retry without signing in again.")
+            }
+            if code == 401 || code == 403 {
+                throw ProofError.message("Google Health refused read access (\(code)). Reconnect Google Health and review activity read access. Saved steps are preserved.")
+            }
+            throw ProofError.message("Google Health read failed (\(code)). Saved steps are preserved. Try Sync now again; no extra copy will be created.")
         }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw ProofError.message("Google Health returned an unreadable response.")
@@ -122,7 +128,7 @@ final class GoogleWalkReader {
         let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = .current; f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         let filter = "exercise.interval.civil_start_time >= \"\(f.string(from: start))\" AND exercise.interval.civil_start_time < \"\(f.string(from: end))\""
-        var result: [String: PadStepImport] = [:]
+        var result: [PadStepImport] = []
         var page: String?; var seen = Set<String>()
         repeat {
             var query = [URLQueryItem(name: "filter", value: filter), URLQueryItem(name: "pageSize", value: "25")]
@@ -134,10 +140,7 @@ final class GoogleWalkReader {
                     guard walk.userID == account else { throw ProofError.message("Workout account did not match the signed-in Google Health account.") }
                     // A local bound protects against widened API civil-time interpretations.
                     if walk.start >= start, walk.start < end, walk.end <= Date() {
-                        if let old = result[walk.id], !old.hasSameMeasurements(as: walk) {
-                            throw ProofError.message("Google returned conflicting measurements for a walk.")
-                        }
-                        result[walk.id] = walk
+                        result.append(walk)
                     }
                 }
             }
@@ -146,6 +149,6 @@ final class GoogleWalkReader {
                 guard seen.insert(value).inserted, seen.count <= 100 else { throw ProofError.message("Google pagination did not finish. No sync cursor was advanced.") }
             } else { page = nil }
         } while page != nil
-        return result.values.sorted { $0.start < $1.start }
+        return try PadStepImport.coalescing(result)
     }
 }

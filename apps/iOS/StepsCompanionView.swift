@@ -49,7 +49,7 @@ struct StepsCompanionView: View {
                     if let last = sync.lastChecked {
                         LabeledContent("Last checked") { Text(last, style: .time) }
                     }
-                    Button("Sync now") { Task { await sync.sync() } }
+                    Button("Sync now") { Task { await sync.sync(force: true) } }
                         .frame(minHeight: 44).disabled(sync.busy || sync.connecting || sync.email == nil || !sync.authorized)
                 } header: { Text("Step sync") }
                 footer: { Text(sync.exportsMissingSteps ? "The Mac keeps Google's detected workouts and fills uncovered time. This iPhone receives the pad's full readings from the paired Mac and exports only steps missing from Google's count." : "The Mac saves your workout and heart rate to Google Health. This iPhone saves only the walk's measured steps to Apple Health.") }
@@ -99,7 +99,7 @@ struct StepsCompanionView: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("\((entry.exported?.steps ?? entry.walk.steps).formatted()) steps\(sync.exportsMissingSteps ? " exported" : "")").font(.headline)
                                 Text(entry.walk.start, format: .dateTime.month().day().hour().minute()).font(.subheadline)
-                                Label(entry.state == "covered" ? "Already covered by Google" : entry.state == "confirmed" ? "Verified once in Apple Health" : "Needs review",
+                                Label(entry.state == "covered" ? "Already covered by Google" : entry.state == "confirmed" ? "Verified once in Apple Health" : entry.state == "ready" ? "Waiting to sync" : entry.state == "attempted" ? "Checking step update" : "Needs review",
                                       systemImage: (entry.state == "confirmed" || entry.state == "covered") ? "checkmark.circle" : "exclamationmark.triangle")
                                 Text(entry.note).font(.footnote).foregroundStyle(.secondary)
                             }.padding(.vertical, 4)

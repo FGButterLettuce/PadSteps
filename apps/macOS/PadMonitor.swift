@@ -4,6 +4,7 @@ import PadStepsCore
 import Darwin
 
 struct DesktopState: Codable {
+    var schemaVersion: Int? = 1
     var recorder = AutomaticRecorder()
     var walks: [AutomaticWalk] = []
     var deviceID: UUID?
@@ -41,11 +42,8 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     private var persistenceHealthy = true
     private var lockFD: Int32 = -1
     private var storageOpen = false
+    private var lastPersistenceAttempt = Date.distantPast
     var canWriteSavedState: Bool { storageOpen && persistenceHealthy }
-    var automaticallyReusesFitbitWalks: Bool {
-        let value = String(describing: Bundle.main.object(forInfoDictionaryKey: "PadStepsAutoCorrectMatchingWalks") ?? false).lowercased()
-        return ["true", "yes", "1"].contains(value)
-    }
 
     override init() {
         directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(Bundle.main.bundleIdentifier ?? "org.padsteps.desktop", isDirectory: true)
@@ -56,6 +54,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             let url = directory.appendingPathComponent("state.json")
             if FileManager.default.fileExists(atPath: url.path) {
                 initial = try JSONDecoder().decode(DesktopState.self, from: Data(contentsOf: url))
+                guard (initial.schemaVersion ?? 1) == 1 else { throw PadError.message("This saved journal needs a newer PadSteps app.") }
                 initial.recorder.disconnected()
             }
         } catch { startupError = "Couldn’t read saved walks. Automatic recording is paused to protect them." }
@@ -77,14 +76,17 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
 
     func persist() throws {
         guard storageOpen else { throw PadError.message("Saved data is unavailable. Close the other PadSteps instance or repair the data folder first.") }
+        lastPersistenceAttempt = Date()
         do {
+            state.schemaVersion = 1
             let url = directory.appendingPathComponent("state.json")
             try JSONEncoder().encode(state).write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             let file = try FileHandle(forWritingTo: url); try file.synchronize(); try file.close()
             persistenceHealthy = true
+            if error?.hasPrefix("Couldn’t save walks to disk.") == true { error = nil }
         } catch {
-            persistenceHealthy = false; self.error = "Couldn’t save walks to disk. Uploads are paused; free disk space and reopen PadSteps."
+            persistenceHealthy = false; self.error = "Couldn’t save walks to disk. Uploads are paused; free disk space and keep PadSteps running so the recorded readings can be saved."
             throw error
         }
     }
@@ -100,6 +102,16 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     }
 
     func retrySync() { lastSync = .distantPast; Task { await syncPending() } }
+
+    func finishInterruptedRecording() {
+        guard !linked, persistenceHealthy else { return }
+        var recorder = state.recorder
+        guard let walk = recorder.finishForReview() else { return }
+        do {
+            try evidence("before-interrupted-finish", walk: walk, value: JSONSerialization.jsonObject(with: JSONEncoder().encode(state.recorder)))
+            state.recorder = recorder; state.walks.insert(walk, at: 0); try persist()
+        } catch { self.error = error.localizedDescription }
+    }
 
     func confirmTotals(_ id: UUID, totals: RecordedWalkTotals) {
         guard !syncing, persistenceHealthy, let walk = state.walks.first(where: { $0.id == id }) else { return }
@@ -157,6 +169,12 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     }
 
     private func tick() {
+        // Retry in-memory recordings after a runtime disk failure. A journal
+        // unreadable at startup never sets storageOpen and must not be replaced.
+        if storageOpen, !persistenceHealthy, Date().timeIntervalSince(lastPersistenceAttempt) >= 30 {
+            try? persist()
+        }
+        google.restoreIfAvailable()
         if state.monitoring, central.state == .poweredOn {
             if let peripheral, peripheral.state == .connected {
                 if let query {
@@ -258,7 +276,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
 
     func update(_ walk: AutomaticWalk) throws {
         guard let index = state.walks.firstIndex(where: { $0.id == walk.id }) else { return }
-        state.walks[index] = walk; try persist()
+        state.walks[index] = walk.retainingStepIdentity(from: state.walks[index]); try persist()
     }
     func evidence(_ name: String, walk: AutomaticWalk, value: Any) throws {
         let folder = directory.appendingPathComponent("Walks/\(walk.id.uuidString)", isDirectory: true)
@@ -271,14 +289,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     func syncPending() async {
         guard !syncing, persistenceHealthy, google.connected else { return }
         syncing = true; lastSync = Date()
-        var automaticCorrections: [(UUID, WorkoutConflict)] = []
-        defer {
-            syncing = false; syncingWalkID = nil
-            let candidates = automaticCorrections
-            if !candidates.isEmpty {
-                Task { for (id, conflict) in candidates { await self.correctExistingWorkout(walkID: id, conflict: conflict) } }
-            }
-        }
+        defer { syncing = false; syncingWalkID = nil }
         for pending in state.walks.filter(\.needsSync) {
             syncingWalkID = pending.id
             var walk = pending
@@ -352,10 +363,6 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
                         if reason == UploadGuard.overlapMessage {
                             walk.reviewKind = "overlap"
                             await loadComparison(walk: walk, points: existing)
-                            if let candidate = WorkoutConflict.automaticCandidate(in: existing, for: walk,
-                                enabled: automaticallyReusesFitbitWalks) {
-                                automaticCorrections.append((walk.id, candidate))
-                            }
                         }
                         try update(walk); continue
                     case .resolveOperation(let operation):
@@ -389,6 +396,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
             } catch {
                 walk.detail = error.localizedDescription
                 do { try update(walk) } catch { break }
+                if (error as? GoogleHTTPError)?.isTransient == true || error is GoogleRefreshUnavailable || error is URLError { return }
             }
         }
         await auditRecentSavedWalks()
@@ -396,9 +404,10 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
 
     private func auditRecentSavedWalks() async {
         // Fitbit auto-detection may arrive after our upload; surface that later overlap too.
-        let recent = state.walks.filter { $0.status == "saved" && $0.exportEnd > Date().addingTimeInterval(-3 * 86400) }
-        for var walk in recent.prefix(20) {
+        let recent = WorkoutAuditSchedule.due(state.walks, now: Date())
+        for var walk in recent {
             do {
+                walk.lastGoogleAudit = Date(); try update(walk)
                 try await verifyAccount()
                 if walk.gapExport != nil { try await syncGapExport(walk: &walk); continue }
                 let all = try await workouts(near: walk)
@@ -487,6 +496,7 @@ final class PadMonitor: NSObject, ObservableObject, @preconcurrency CBCentralMan
     func correctExistingWorkout(walkID: UUID, conflict: WorkoutConflict) async {
         guard !syncing, persistenceHealthy, google.connected,
               var walk = state.walks.first(where: { $0.id == walkID }),
+              walk.gapExport == nil, conflict.isOwned(by: google.clientID),
               (walk.canRecheckOverlap || (walk.canReviewCorrection && walk.correctionTarget == conflict.id) ||
                (walk.reviewKind == "savedMismatch" && walk.resourceName == conflict.id)),
               conflict.coversSameWalk(walk), walk.averageBPM != nil else { return }

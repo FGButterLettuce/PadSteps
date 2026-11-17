@@ -37,4 +37,19 @@ final class StepTransportMigrationTests: XCTestCase {
         XCTAssertFalse(original.hasSameMeasurements(as: changedTime))
         XCTAssertFalse(original.hasSameMeasurements(as: changedIdentity))
     }
+    func testOneSessionCannotArriveUnderTwoHealthIdentities() throws {
+        let session = UUID(); var first = legacy(); first.sessionID = session; first.legacyResource = first.resource
+        var other = PadStepImport(resource: "users/111/dataTypes/exercise/dataPoints/333",userID: "111",start: first.start,end: first.end,steps: first.steps)
+        other.sessionID = session; other.legacyResource = other.resource
+        XCTAssertThrowsError(try PadStepImport.coalescing([first,other]))
+        other.legacyResource = first.resource
+        XCTAssertEqual(try PadStepImport.coalescing([first,other]).count,1)
+    }
+    func testMalformedSavedResourceIsRejectedWithoutAnIdentityCrash() {
+        let invalid = PadStepImport(resource: "",userID: "111",start: Date(timeIntervalSince1970: 1000),end: Date(timeIntervalSince1970: 1600),steps: 900)
+        XCTAssertFalse(invalid.isValidMeasurement)
+        XCTAssertFalse(invalid.id.isEmpty)
+        XCTAssertThrowsError(try PadStepImport.coalescing([invalid]))
+    }
+
 }

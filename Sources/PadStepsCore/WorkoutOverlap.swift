@@ -28,6 +28,8 @@ public struct WorkoutConflict: Codable, Identifiable, Equatable, Sendable {
     public let end: Date
     public let type: String
     public let source: String
+    public let platform: String?
+    public let applicationClientID: String?
     public let steps: Int?
     public init?(point: [String: Any]) {
         guard let name = point["name"] as? String,
@@ -38,24 +40,17 @@ public struct WorkoutConflict: Codable, Identifiable, Equatable, Sendable {
         id = name; self.start = start; self.end = end
         type = exercise["exerciseType"] as? String ?? "Unknown exercise"
         let dataSource = point["dataSource"] as? [String: Any] ?? [:]
+        platform = dataSource["platform"] as? String
+        let application = dataSource["application"] as? [String: Any]
+        applicationClientID = application?["googleWebClientId"] as? String ?? application?["webClientId"] as? String
         let device = dataSource["device"] as? [String: Any] ?? [:]
         source = device["displayName"] as? String ?? dataSource["platform"] as? String ?? "Unknown source"
         let summary = exercise["metricsSummary"] as? [String: Any] ?? [:]
         let value = Int(String(describing: summary["steps"] ?? ""))
         steps = value.flatMap { $0 >= 0 && $0 <= 100_000 ? $0 : nil }
     }
-    /// Automatic reconciliation is deliberately narrower than an explicit reviewed correction.
-    public static func automaticCandidate(in points: [[String: Any]], for walk: AutomaticWalk, enabled: Bool) -> WorkoutConflict? {
-        guard enabled, walk.canRecheckOverlap, points.count == 1, let point = points.first,
-              let source = point["dataSource"] as? [String: Any], source["platform"] as? String == "FITBIT",
-              let device = source["device"] as? [String: Any], device["displayName"] as? String == "Fitbit Air",
-              let method = source["recordingMethod"] as? String,
-              ["ACTIVELY_MEASURED", "PASSIVELY_MEASURED", "DERIVED"].contains(method),
-              let conflict = WorkoutConflict(point: point), conflict.coversSameWalk(walk) else { return nil }
-        let overlap = min(conflict.end, walk.exportEnd).timeIntervalSince(max(conflict.start, walk.start))
-        guard overlap >= 0.9 * walk.exportEnd.timeIntervalSince(walk.start),
-              overlap >= 0.9 * conflict.end.timeIntervalSince(conflict.start) else { return nil }
-        return conflict
+    public func isOwned(by clientID: String) -> Bool {
+        platform == "GOOGLE_WEB_API" && applicationClientID == clientID && !clientID.isEmpty
     }
     public func coversSameWalk(_ walk: AutomaticWalk) -> Bool {
         // Do not overwrite a partial, longer, or unrelated session with a whole-pad total.

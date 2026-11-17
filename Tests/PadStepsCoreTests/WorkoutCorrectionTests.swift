@@ -48,27 +48,14 @@ final class WorkoutCorrectionTests: XCTestCase {
         exercise["exerciseType"] = "RUNNING"; object["exercise"] = exercise
         XCTAssertFalse(try XCTUnwrap(WorkoutConflict(point: object)).coversSameWalk(walk))
     }
-    func testOnlyOneMatchingKnownFitbitWalkCanBeAutomaticallyCorrected() throws {
-        var walk = fixture(); walk.status = "review"; walk.reviewKind = "overlap"
-        var object = point(walk, note: "")
-        object["dataSource"] = ["platform": "FITBIT", "recordingMethod": "DERIVED", "device": ["displayName": "Fitbit Air"]]
-        XCTAssertNotNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
-        var shortWalk = walk; shortWalk.last.seconds = 60
-        var adjacent = point(shortWalk, note: "")
-        adjacent["dataSource"] = object["dataSource"]
-        var adjacentExercise = adjacent["exercise"] as! [String: Any]
-        let f = ISO8601DateFormatter()
-        adjacentExercise["interval"] = ["startTime": f.string(from: shortWalk.start.addingTimeInterval(59)),
-            "endTime": f.string(from: shortWalk.exportEnd.addingTimeInterval(59))]
-        adjacent["exercise"] = adjacentExercise
-        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [adjacent], for: shortWalk, enabled: true), "A one-second boundary overlap must not merge neighboring sessions")
-        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: false))
-        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object, object], for: walk, enabled: true))
-        walk.uploadAttempted = true
-        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
-        walk.uploadAttempted = nil
-        object["dataSource"] = ["platform": "FITBIT", "recordingMethod": "MANUAL", "device": ["displayName": "Fitbit Air"]]
-        XCTAssertNil(WorkoutConflict.automaticCandidate(in: [object], for: walk, enabled: true))
+    func testOnlyRecorderOwnedWorkoutsMayBeCorrected() throws {
+        let walk = fixture()
+        var object = point(walk,note: "")
+        XCTAssertFalse(try XCTUnwrap(WorkoutConflict(point: object)).isOwned(by: "our-client"))
+        object["dataSource"] = ["platform": "GOOGLE_WEB_API","application": ["googleWebClientId":"another-client"]]
+        XCTAssertFalse(try XCTUnwrap(WorkoutConflict(point: object)).isOwned(by: "our-client"))
+        object["dataSource"] = ["platform": "GOOGLE_WEB_API","application": ["googleWebClientId":"our-client"]]
+        XCTAssertTrue(try XCTUnwrap(WorkoutConflict(point: object)).isOwned(by: "our-client"))
     }
     func testLateOverlapRetainsItsExistingResourceAndCannotBecomeANewUpload() {
         var walk = fixture(); walk.status = "review"; walk.reviewKind = "lateOverlap"

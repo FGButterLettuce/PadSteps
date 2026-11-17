@@ -19,7 +19,7 @@ public struct MeasuredWalkReceipt: Codable, Sendable {
         version = 1; sessionID = walk.id; recorderClientID = clientID; self.resource = resource
         start = walk.start; end = walk.exportEnd; steps = walk.steps
         carrierStart = carrier.start; carrierEnd = carrier.end; self.gap = gap
-        legacyResource = walk.gapExport?.legacyResource
+        legacyResource = walk.stepIdentityAssigned == true ? walk.stepIdentityResource : walk.gapExport?.legacyResource
     }
     public func signedNote(privateKey: Data) throws -> String {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

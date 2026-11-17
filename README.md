@@ -136,3 +136,6 @@ third-party dependencies retain their own licenses.
 Blocked by an existing exercise? See [overlap review and step comparisons](docs/OVERLAPPING-WORKOUTS.md).
 
 For Bevel with a direct Google Health connection, optional [`missing-google` mode](docs/OVERLAPPING-WORKOUTS.md#two-automatic-bevel-feeds-google-plus-missing-pad-steps) exports only the pad steps missing from Google, revising the same record after later syncs.
+
+See the [flow reliability audit](docs/FLOW-AUDIT.md) for interruption recovery,
+regression coverage and remaining conditions that need user action.

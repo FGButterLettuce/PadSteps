@@ -6,7 +6,12 @@ extension PadMonitor {
     func writeWalkFeed() throws -> URL? {
         guard canWriteSavedState else { throw PadError.message("Saved data is unavailable. The step relay is paused to protect existing records.") }
         guard let account = state.healthUserID else { return nil }
-        let sessions = state.walks.filter { $0.issue == nil && $0.steps > 0 && $0.seconds > 0 && ($0.status == "saved" || $0.gapExport != nil) }
+        var assigned = false
+        for index in state.walks.indices where state.walks[index].canExportMeasuredSteps && state.walks[index].stepIdentityAssigned != true {
+            state.walks[index] = state.walks[index].preparingStepIdentity(); assigned = true
+        }
+        if assigned { try persist() }
+        let sessions = state.walks.filter(\.canExportMeasuredSteps)
             .sorted { $0.id.uuidString < $1.id.uuidString }.map { MeasuredWalkFeed.Session(walk: $0) }
         let feed = MeasuredWalkFeed(account: account, clientID: google.clientID, sessions: sessions)
         let data = try feed.signed(privateKey: CorrectionSigner.key().rawRepresentation)

@@ -36,6 +36,9 @@ public struct AutomaticWalk: Codable, Identifiable, Sendable {
     public var creationRejected: Bool?
     public var pausedFromStatus: String?
     public var gapExport: WorkoutGapExport?
+    public var lastGoogleAudit: Date?
+    public var stepIdentityAssigned: Bool?
+    public var stepIdentityResource: String?
     public var detail = ""
     public var steps: Int { max(0, last.steps + stepWraps * 65536 - baselineSteps) }
     public var seconds: Int { max(0, last.seconds + clockWraps * 65536 - baselineSeconds) }
@@ -63,6 +66,19 @@ public struct AutomaticRecorder: Codable, Sendable {
 
     public mutating func disconnected() { stopped = [] }
 
+    public mutating func finishForReview() -> AutomaticWalk? {
+        guard var walk = active else { return nil }
+        walk.stop = walk.last.at
+        walk.status = walk.steps > 0 && walk.seconds > 0 ? "review" : "empty"
+        if walk.status == "review" {
+            walk.reviewKind = "interruptedRecording"
+            walk.issue = "Recording ended without a confirmed pad stop. Review the last recorded totals."
+        }
+        active = nil; stopped = []
+        lastIdle = walk.last
+        return walk
+    }
+
     public mutating func observe(_ value: PadTelemetry, at now: Date) -> AutomaticWalk? {
         guard [.running, .idle, .paused, .countdown, .stopping].contains(value.motion) else { return nil }
         let sample = PadObservation(value, at: now)
@@ -70,7 +86,7 @@ public struct AutomaticRecorder: Codable, Sendable {
             guard sample.moving else { lastIdle = sample; return nil }
             let origin = lastIdle.flatMap { idle -> PadObservation? in
                 // A smaller clock/counter marks a new pad session.
-                idle.seconds <= sample.seconds && idle.steps <= sample.steps ? idle : nil
+                idle.seconds <= sample.seconds && idle.steps <= sample.steps && idle.metres <= sample.metres ? idle : nil
             }
             active = AutomaticWalk(observedStart: now, baselineSteps: origin?.steps ?? 0,
                                    baselineSeconds: origin?.seconds ?? 0,

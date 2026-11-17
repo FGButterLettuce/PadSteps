@@ -37,6 +37,32 @@ final class MeasuredWalkFeedTests: XCTestCase {
         XCTAssertThrowsError(try MeasuredWalkFeed.imports(data, publicKey: key.publicKey.rawRepresentation, account: "999", clientID: "recorder"))
         XCTAssertThrowsError(try MeasuredWalkFeed.imports(data, publicKey: key.publicKey.rawRepresentation, account: "111", clientID: "different"))
     }
+    func testConfirmedPadStepsDoNotWaitForGoogleWorkoutOrHeartRate() {
+        var measured = walk(); measured.status = "waitingHeartRate"
+        XCTAssertTrue(measured.canExportMeasuredSteps)
+        measured.issue = "Unconfirmed reset"; XCTAssertFalse(measured.canExportMeasuredSteps)
+        measured.issue = nil; measured.status = "localOnly"; XCTAssertFalse(measured.canExportMeasuredSteps)
+    }
+    func testPublishingIdentityBeforeGoogleSaveNeverCreatesASecondHealthIdentity() throws {
+        let key = Curve25519.Signing.PrivateKey()
+        var measured = walk().preparingStepIdentity()
+        let first = try MeasuredWalkFeed(account: "111",clientID: "recorder",sessions: [.init(walk: measured)]).signed(privateKey: key.rawRepresentation)
+        measured.resourceName = "users/111/dataTypes/exercise/dataPoints/222"
+        let later = try MeasuredWalkFeed(account: "111",clientID: "recorder",sessions: [.init(walk: measured)]).signed(privateKey: key.rawRepresentation)
+        let a = try MeasuredWalkFeed.imports(first,publicKey: key.publicKey.rawRepresentation,account: "111",clientID: "recorder")
+        let b = try MeasuredWalkFeed.imports(later,publicKey: key.publicKey.rawRepresentation,account: "111",clientID: "recorder")
+        XCTAssertEqual(a[0].syncIdentifier,b[0].syncIdentifier)
+        var stale = walk(); stale.id = measured.id; stale.resourceName = measured.resourceName
+        let retained = stale.retainingStepIdentity(from: measured)
+        XCTAssertEqual(retained.stepIdentityAssigned,true); XCTAssertNil(retained.stepIdentityResource)
+    }
+    func testOldUnconfirmedCreateWaitsForItsExistingIdentityRatherThanDuplicatingIt() {
+        var measured = walk(); measured.status = "attempted"; measured.uploadAttempted = true
+        XCTAssertFalse(measured.canExportMeasuredSteps)
+        measured.resourceName = "users/111/dataTypes/exercise/dataPoints/222"
+        XCTAssertTrue(measured.canExportMeasuredSteps)
+        XCTAssertEqual(measured.preparingStepIdentity().stepIdentityResource,measured.resourceName)
+    }
     func testDuplicatedSessionOrCrossAccountLegacyReferenceIsRejected() throws {
         let key = Curve25519.Signing.PrivateKey(); var measured = walk()
         let item = MeasuredWalkFeed.Session(walk: measured)

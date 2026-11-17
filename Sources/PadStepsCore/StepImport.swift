@@ -10,8 +10,8 @@ public struct PadStepImport: Codable, Equatable, Sendable {
     public var sessionID: UUID? = nil
     public var legacyResource: String? = nil
     public var id: String {
-        if let legacyResource { return "google_\(userID)_\(legacyResource.split(separator: "/").last!)" }
-        return sessionID.map { "pad_session_\(userID)_\($0.uuidString.lowercased())" } ?? "google_\(userID)_\(resource.split(separator: "/").last!)"
+        if let legacyResource { return "google_\(userID)_\(legacyResource.split(separator: "/").last.map(String.init) ?? "invalid")" }
+        return sessionID.map { "pad_session_\(userID)_\($0.uuidString.lowercased())" } ?? "google_\(userID)_\(resource.split(separator: "/").last.map(String.init) ?? "invalid")"
     }
     public var syncIdentifier: String { "padsteps.\(id).steps" }
 
@@ -22,6 +22,29 @@ public struct PadStepImport: Codable, Equatable, Sendable {
         id == other.id && userID == other.userID && steps == other.steps &&
         abs(start.timeIntervalSince(other.start)) < 0.002 &&
         abs(end.timeIntervalSince(other.end)) < 0.002
+    }
+
+    public var isValidMeasurement: Bool {
+        func valid(_ name: String) -> Bool {
+            let parts = name.split(separator: "/")
+            return parts.count == 6 && parts[0] == "users" && parts[1] == Substring(userID) && parts[2] == "dataTypes" && parts[3] == "exercise" && parts[4] == "dataPoints" && !parts[5].isEmpty
+        }
+        return !userID.isEmpty && userID.allSatisfy(\.isNumber) && valid(resource) &&
+            legacyResource.map(valid) != false && steps > 0 && steps < 100_000 && end > start && end.timeIntervalSince(start) < 86400
+    }
+    public static func coalescing(_ values: [PadStepImport]) throws -> [PadStepImport] {
+        var byID: [String: PadStepImport] = [:]
+        var bySession: [UUID: String] = [:]
+        for value in values {
+            guard value.isValidMeasurement else { throw StepImportError.invalidRecord }
+            if let session = value.sessionID {
+                guard bySession[session] == nil || bySession[session] == value.id else { throw StepImportError.invalidRecord }
+                bySession[session] = value.id
+            }
+            if let previous = byID[value.id], !previous.hasSameMeasurements(as: value) { throw StepImportError.invalidRecord }
+            byID[value.id] = value
+        }
+        return byID.values.sorted { $0.end > $1.end }
     }
 
     public static func parse(_ data: Data, recorderClientID: String, correctionPublicKey: Data? = nil) throws -> PadStepImport? {

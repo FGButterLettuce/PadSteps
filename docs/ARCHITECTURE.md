@@ -67,10 +67,13 @@ are held for review, not automatically restored. The journal is persisted before
 the HealthKit save; retries preserve the same identity. The write type is only
 step count, not a workout, HR or distance record.
 
-The journal is account-bound, starts at setup-day midnight and queries seven-day
-windows with a three-day overlap for delayed records. Older experiments and
-records published more than three days late need deliberate backfill review.
-It uses atomic writes and iOS file protection. Corrupt journal data pauses sync.
+The journal is account-bound and starts at setup-day midnight. A verified local
+feed is authoritative; legacy Google workout discovery runs only when no feed
+exists and looks back three days. New sessions and pending writes run before
+stable history. Completed walks are rechecked for three days; interrupted writes
+remain recoverable regardless of age. Older baseline changes need deliberate
+backfill review. Atomic writes and iOS file protection retain unreadable journals
+instead of silently replacing them. See the [flow audit](FLOW-AUDIT.md).
 
 Foreground opening and visible-app checks provide catch-up. HealthKit workout
 notifications can help only when a matching workout actually reaches Apple
